@@ -1,0 +1,40 @@
+services:
+  mysql:
+    image: mysql:8.4.11
+    container_name: memory-game-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: memory_game_root_123
+      MYSQL_DATABASE: memory_game
+      MYSQL_USER: memory_game
+      MYSQL_PASSWORD: memory_game_123
+    ports:
+      - "3307:3306"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - memory_game_mysql_data:/var/lib/mysql
+      - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pmemory_game_root_123"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 20s
+
+  adminer:
+    image: adminer:latest
+    container_name: memory-game-adminer
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      ADMINER_DEFAULT_SERVER: mysql
+    ports:
+      - "8080:8080"
+
+volumes:
+  memory_game_mysql_data:
+    name: memory-game-mysql-data

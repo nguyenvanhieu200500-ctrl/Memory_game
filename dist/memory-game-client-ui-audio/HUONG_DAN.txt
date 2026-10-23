@@ -1,0 +1,14 @@
+MEMORY ARENA - GOI CLIENT
+
+1. Cai JDK 17 tro len tren may nguoi choi.
+2. Giai nen goi nay va chay run-client.bat.
+3. Tai man hinh dang nhap:
+   - May chu: nhap dia chi IPv4 cua may dang chay Server.
+   - Cong: 12345.
+   - Moi nguoi dung mot tai khoan khac nhau.
+4. Cac may phai cung LAN/Wi-Fi, hoac cung mang Radmin VPN/ZeroTier.
+5. Cach bat dau:
+   - Ghep nhanh: moi nguoi bam San sang, Server dem nguoc 3 giay va tu bat dau.
+   - Phong rieng: moi nguoi bam San sang, chu phong bam Bat dau, Server dem nguoc 3 giay.
+
+May Client khong can chay run-server.bat.

@@ -1,0 +1,8 @@
+/out/
+/data/state.bin
+/data/state.bin.tmp
+/.test-data/
+/.test-run*/
+/dist/*.zip
+/sources.txt
+*.log
