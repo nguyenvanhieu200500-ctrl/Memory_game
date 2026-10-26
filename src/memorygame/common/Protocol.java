@@ -11,6 +11,7 @@ public final class Protocol {
     public enum Type {
         LOGIN, LOGIN_OK, REGISTER, REGISTER_OK, ERROR,
         LOBBY_UPDATE,
+        PROFILE_REQUEST, PROFILE_UPDATE, AVATAR_UPDATE, PASSWORD_CHANGE, PROFILE_RESULT,
         WALLET_UPDATE, SHOP_REQUEST, SHOP_UPDATE, SHOP_BUY, SHOP_EQUIP,
         QUEUE_JOIN, QUEUE_LEAVE,
         ROOM_CREATE, ROOM_JOIN, ROOM_UPDATE, ROOM_LEAVE, ROOM_READY, ROOM_START, ROOM_KICK,
@@ -83,7 +84,11 @@ public final class Protocol {
 
         @Override
         public String toString() {
-            return type + " " + data;
+            Map<String, Object> safe = new HashMap<>(data);
+            for (String key : new String[]{"password", "currentPassword", "newPassword"})
+                if (safe.containsKey(key)) safe.put(key, "[hidden]");
+            if (safe.containsKey("avatar")) safe.put("avatar", "[image]");
+            return type + " " + safe;
         }
     }
 }

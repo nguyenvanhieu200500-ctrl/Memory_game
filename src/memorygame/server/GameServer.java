@@ -157,6 +157,9 @@ public final class GameServer implements AutoCloseable {
                 switch (message.type()) {
                     case LOGIN -> login(client, message);
                     case REGISTER -> register(client, message);
+                    case PROFILE_REQUEST -> sendProfile(client);
+                    case AVATAR_UPDATE -> updateAvatar(client, message.string("avatar"));
+                    case PASSWORD_CHANGE -> changePassword(client, message);
                     case QUEUE_JOIN -> joinQueue(client, message.integer("size"), message.integer("boardSize"), message.string("cardTheme"));
                     case QUEUE_LEAVE -> leaveQueue(client.username);
                     case ROOM_CREATE -> createRoom(client, message);
@@ -222,6 +225,7 @@ public final class GameServer implements AutoCloseable {
 
         client.send(Message.of(Type.LOGIN_OK)
                 .with("username", user.username)
+                .with("avatar", user.avatar)
                 .with("rating", user.rating)
                 .with("wins", user.wins)
                 .with("coins", user.coins)
@@ -1058,6 +1062,51 @@ public final class GameServer implements AutoCloseable {
         }, 30, TimeUnit.SECONDS);
     }
 
+    private void sendProfile(ClientHandler client) {
+        UserRecord u = user(client.username);
+        client.send(Message.of(Type.PROFILE_UPDATE).with("username", u.username).with("avatar", u.avatar)
+                .with("rating", u.rating).with("wins", u.wins).with("games", u.games).with("coins", u.coins));
+    }
+
+    private void profileResult(ClientHandler client, String action, boolean success, String message) {
+        client.send(Message.of(Type.PROFILE_RESULT).with("action", action).with("success", success).with("message", message));
+    }
+
+    private void updateAvatar(ClientHandler client, String avatar) {
+        UserRecord u = user(client.username);
+        String previous = u.avatar;
+        try {
+            memorygame.common.AvatarImages.decode(avatar);
+            u.avatar = avatar;
+            persistState();
+        } catch (Exception e) {
+            u.avatar = previous;
+            profileResult(client, "avatar", false, "Không lưu được ảnh. Hãy chọn PNG/JPG hợp lệ và thử lại.");
+            return;
+        }
+        profileResult(client, "avatar", true, "Đã cập nhật ảnh đại diện.");
+        sendProfile(client); broadcastLobby();
+    }
+
+    private void changePassword(ClientHandler client, Message request) {
+        UserRecord u = user(client.username);
+        String next = request.string("newPassword");
+        if (!u.passwordHash.equals(hash(request.string("currentPassword")))) {
+            profileResult(client, "password", false, "Mật khẩu hiện tại không đúng."); return;
+        }
+        if (next.length() < 6 || next.length() > 128) {
+            profileResult(client, "password", false, "Mật khẩu mới cần từ 6 đến 128 ký tự."); return;
+        }
+        String previous = u.passwordHash;
+        u.passwordHash = hash(next);
+        try { persistState(); }
+        catch (Exception e) {
+            u.passwordHash = previous;
+            profileResult(client, "password", false, "Không lưu được mật khẩu. Vui lòng thử lại."); return;
+        }
+        profileResult(client, "password", true, "Đổi mật khẩu thành công.");
+    }
+
     private void sendRanking(ClientHandler client) {
         List<UserRecord> ordered = users.values().stream()
                 .sorted(Comparator.comparingInt((UserRecord u) -> u.rating).reversed()
@@ -1074,6 +1123,7 @@ public final class GameServer implements AutoCloseable {
             row.put("wins", user.wins);
             row.put("games", user.games);
             row.put("winRate", user.winRate());
+            row.put("avatar", user.avatar);
             rows.add(row);
         }
         client.send(Message.of(Type.RANKING_UPDATE).with("rows", (Serializable) rows));
@@ -1157,6 +1207,7 @@ public final class GameServer implements AutoCloseable {
             row.put("wins", user.wins);
             row.put("status", user.status);
             row.put("title", titleFor(user.equippedTitle));
+            row.put("avatar", user.avatar);
             rows.add(row);
         }
         rows.sort(Comparator.comparing(row -> String.valueOf(row.get("username")), String.CASE_INSENSITIVE_ORDER));
@@ -1368,24 +1419,18 @@ public final class GameServer implements AutoCloseable {
     }
 
     private void saveState() {
-        if (mysqlStorage) {
-            try {
-                databaseStore.saveUsers(users);
-            } catch (Exception e) {
-                System.err.println("Không thể lưu MySQL: " + e.getMessage());
-            }
-            return;
+        try { persistState(); }
+        catch (Exception e) { System.err.println("Không thể lưu dữ liệu: " + e.getMessage()); }
+    }
+
+    private void persistState() throws Exception {
+        if (mysqlStorage) { databaseStore.saveUsers(users); return; }
+        Files.createDirectories(stateFile.getParent());
+        Path temp = stateFile.resolveSibling("state.bin.tmp");
+        try (ObjectOutputStream output = new ObjectOutputStream(Files.newOutputStream(temp))) {
+            output.writeObject(users);
         }
-        try {
-            Files.createDirectories(stateFile.getParent());
-            Path temp = stateFile.resolveSibling("state.bin.tmp");
-            try (ObjectOutputStream output = new ObjectOutputStream(Files.newOutputStream(temp))) {
-                output.writeObject(users);
-            }
-            Files.move(temp, stateFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (Exception e) {
-            System.err.println("Không thể lưu dữ liệu: " + e.getMessage());
-        }
+        Files.move(temp, stateFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
     }
 
     private final class ClientHandler implements Runnable {
@@ -1435,7 +1480,8 @@ public final class GameServer implements AutoCloseable {
     static final class UserRecord implements Serializable {
         @Serial private static final long serialVersionUID = 1L;
         final String username;
-        final String passwordHash;
+        String passwordHash;
+        String avatar = "";
         int rating;
         int wins;
         int games;

@@ -25,7 +25,7 @@ final class DatabaseStore {
              Statement statement = connection.createStatement();
              ResultSet rows = statement.executeQuery("""
                      SELECT username, password_hash, rating, wins, games, coins,
-                            equipped_theme, equipped_title
+                            equipped_theme, equipped_title, avatar
                      FROM users
                      """)) {
             while (rows.next()) {
@@ -37,6 +37,7 @@ final class DatabaseStore {
                 record.coins = rows.getInt("coins");
                 record.equippedTheme = rows.getString("equipped_theme");
                 record.equippedTitle = rows.getString("equipped_title");
+                record.avatar = rows.getString("avatar");
                 users.put(key(record.username), record);
             }
 
@@ -66,13 +67,13 @@ final class DatabaseStore {
         String upsertUser = """
                 INSERT INTO users
                     (username, password_hash, rating, wins, losses, games, coins,
-                     equipped_theme, equipped_title)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     equipped_theme, equipped_title, avatar)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON DUPLICATE KEY UPDATE
                     password_hash = VALUES(password_hash), rating = VALUES(rating),
                     wins = VALUES(wins), losses = VALUES(losses), games = VALUES(games),
                     coins = VALUES(coins), equipped_theme = VALUES(equipped_theme),
-                    equipped_title = VALUES(equipped_title)
+                    equipped_title = VALUES(equipped_title), avatar = VALUES(avatar)
                 """;
         try (Connection connection = open()) {
             connection.setAutoCommit(false);
@@ -97,6 +98,7 @@ final class DatabaseStore {
                     upsert.setInt(7, record.coins);
                     upsert.setString(8, record.equippedTheme);
                     upsert.setString(9, record.equippedTitle);
+                    upsert.setString(10, record.avatar);
                     upsert.executeUpdate();
 
                     deleteItems.setString(1, record.username);
@@ -150,6 +152,9 @@ final class DatabaseStore {
                             INDEX idx_ranking (rating DESC, wins DESC)
                         ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
                         """);
+                try (ResultSet columns = connection.getMetaData().getColumns(connection.getCatalog(), null, "users", "avatar")) {
+                    if (!columns.next()) statement.executeUpdate("ALTER TABLE users ADD COLUMN avatar MEDIUMTEXT NULL");
+                }
                 statement.executeUpdate("""
                         CREATE TABLE IF NOT EXISTS user_items (
                             username VARCHAR(16) NOT NULL,

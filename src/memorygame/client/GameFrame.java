@@ -65,6 +65,11 @@ public final class GameFrame extends JFrame {
     private final DefaultListModel<PlayerItem> lobbyModel = new DefaultListModel<>();
     private final JList<PlayerItem> lobbyList = new JList<>(lobbyModel);
     private JLabel lobbyTitle;
+    private final Map<String, Icon> lobbyAvatars = new HashMap<>();
+    private ProfilePanel profilePanel;
+    private JDialog profileDialog;
+    private String pendingPassword;
+    private boolean profileRequested;
     private JLabel lobbyStats;
     private JLabel lobbyWins;
     private int currentWins;
@@ -325,6 +330,10 @@ public final class GameFrame extends JFrame {
         JPanel wallet = LobbyStyle.surface(new BorderLayout(), 1);
         wallet.add(walletLabel);
         accountActions.add(wallet);
+        JButton personal = illustratedLobbyButton("Hồ sơ", false);
+        personal.setPreferredSize(new Dimension(82, 38));
+        personal.addActionListener(e -> { profileRequested = true; send(Message.of(Protocol.Type.PROFILE_REQUEST)); });
+        accountActions.add(personal);
         accountActions.add(shopButton);
         accountActions.add(logoutButton);
         toolbar.add(accountActions, BorderLayout.EAST);
@@ -797,6 +806,7 @@ public final class GameFrame extends JFrame {
         ruleList.add(gameRule("5", "Vòng màu trên cặp thẻ cho biết người đã ghép đúng."));
         rules.add(ruleList, BorderLayout.NORTH);
         chatPanel = new ChatPanel(text -> send(Message.of(Protocol.Type.CHAT_SEND).with("text", text)));
+        chatPanel.useTranscriptAvatars(name -> chatAvatar(name, 24));
         JTabbedPane matchTabs = new JTabbedPane();
         matchTabs.setBackground(AppTheme.INSET);
         matchTabs.setForeground(TEXT);
@@ -932,6 +942,30 @@ public final class GameFrame extends JFrame {
                 pages.show(root, "lobby");
                 AUDIO.startLobbyMusic();
             }
+            case PROFILE_UPDATE -> {
+                if (!profileRequested && (profileDialog == null || !profileDialog.isDisplayable())) break;
+                profileRequested = false;
+                if (profileDialog != null && profileDialog.isDisplayable()) { profilePanel.update(message); }
+                else {
+                    profileDialog = new JDialog(this, "Thông tin cá nhân", false);
+                    profilePanel = new ProfilePanel(message,
+                            avatar -> send(Message.of(Protocol.Type.AVATAR_UPDATE).with("avatar", avatar)),
+                            (oldPassword, newPassword) -> {
+                                pendingPassword = newPassword;
+                                send(Message.of(Protocol.Type.PASSWORD_CHANGE).with("currentPassword", oldPassword).with("newPassword", newPassword));
+                            }, () -> profileDialog.dispose());
+                    profileDialog.setContentPane(profilePanel);
+                    profileDialog.setSize(620, 540); profileDialog.setMinimumSize(new Dimension(620, 540));
+                    profileDialog.setLocationRelativeTo(this); profileDialog.setVisible(true);
+                }
+            }
+            case PROFILE_RESULT -> {
+                if (message.string("action").equals("password")) {
+                    if (message.bool("success") && pendingPassword != null) savedPassword = pendingPassword;
+                    pendingPassword = null;
+                }
+                if (profilePanel != null) profilePanel.result(message);
+            }
             case REGISTER_OK -> {
                 registerButton.setEnabled(true);
                 loginButton.setEnabled(true);
@@ -1011,6 +1045,7 @@ public final class GameFrame extends JFrame {
         lobbyModel.clear();
         for (Map<String, Object> row : players) {
             String playerName = String.valueOf(row.get("username"));
+            lobbyAvatars.put(playerName, ProfilePanel.icon(Objects.toString(row.get("avatar"), ""), 50));
             String status = String.valueOf(row.get("status"));
             lobbyModel.addElement(new PlayerItem(playerName, status,
                     ((Number) row.get("rating")).intValue(), ((Number) row.get("wins")).intValue(),
@@ -1025,6 +1060,8 @@ public final class GameFrame extends JFrame {
         for (int i = 0; i < lobbyModel.size(); i++) {
             if (lobbyModel.get(i).username.equals(selectedName)) lobbyList.setSelectedIndex(i);
         }
+        whispers.values().forEach(ChatPanel::refreshBubbles);
+        if (chatPanel != null) chatPanel.refreshTranscriptAvatars();
         onlineCountLabel.setText(players.size() + " người online");
         roomInvites.updatePlayers(players, username);
         refreshLobbyActions();
@@ -1193,6 +1230,8 @@ public final class GameFrame extends JFrame {
     }
 
     private void logout() {
+        if (profileDialog != null) profileDialog.dispose();
+        profilePanel = null; pendingPassword = null;
         if (!"IDLE".equals(selfStatus)) {
             showInfo("Bạn chỉ có thể đăng xuất khi đang rảnh tại Lobby.");
             return;
@@ -1421,6 +1460,7 @@ public final class GameFrame extends JFrame {
         if (conversationsWindow != null) conversationsWindow.dispose();
         conversationsWindow = null; conversationsPanel = null;
         whisperHistory = new WhisperHistory(); whisperScope = "";
+        lobbyAvatars.clear();
         unreadMessages.clear(); refreshConversations();
     }
 
@@ -1442,12 +1482,31 @@ public final class GameFrame extends JFrame {
         refreshConversations(); conversationsWindow.setVisible(true); conversationsWindow.toFront();
     }
 
+    private Icon chatAvatar(String name, int size) {
+        Icon avatar = lobbyAvatars.entrySet().stream()
+                .filter(entry -> entry.getKey().equalsIgnoreCase(name))
+                .map(Map.Entry::getValue).findFirst().orElseGet(() -> ProfilePanel.icon("", 50));
+        return new Icon() {
+            public int getIconWidth() { return size; }
+            public int getIconHeight() { return size; }
+            public void paintIcon(Component c, Graphics g, int x, int y) {
+                Graphics2D scaled = (Graphics2D) g.create();
+                scaled.translate(x, y);
+                scaled.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+                scaled.scale((double) size / avatar.getIconWidth(), (double) size / avatar.getIconHeight());
+                avatar.paintIcon(c, scaled, 0, 0);
+                scaled.dispose();
+            }
+        };
+    }
+
     private ChatPanel openWhisper(String peer) {
         String key = peer.toLowerCase(Locale.ROOT);
         ChatPanel panel = whispers.get(key);
         if (panel == null) {
             panel = new ChatPanel(text -> send(Message.of(Protocol.Type.WHISPER_SEND).with("username", peer).with("text", text)),
                     "Thì thầm với " + peer);
+            panel.useMessageBubbles(username, name -> chatAvatar(name, 36));
             panel.setMessages(whisperHistory.messages(peer));
             panel.setBorder(new EmptyBorder(14, 14, 14, 14));
             JDialog dialog = new JDialog(this, "Thì thầm · " + peer, false);
@@ -1994,6 +2053,8 @@ public final class GameFrame extends JFrame {
 
     private void disconnected(String reason) {
         if (!isDisplayable() || closing) return;
+        if (profileDialog != null) profileDialog.dispose();
+        profilePanel = null; profileRequested = false;
         AUDIO.stopLobbyMusic();
         if (connectionBadge != null) {
             connectionBadge.setText("● Mất kết nối");
@@ -2874,7 +2935,8 @@ public final class GameFrame extends JFrame {
             JPanel row = LobbyStyle.surface(new BorderLayout(8, 0), 4);
             row.setBorder(new EmptyBorder(5, 8, 7, 8));
             label.setOpaque(false);
-            JLabel avatar = new JLabel(LobbyStyle.cat(50));
+            JLabel avatar = new JLabel(value instanceof PlayerItem item
+                    ? lobbyAvatars.getOrDefault(item.username, LobbyStyle.cat(50)) : LobbyStyle.cat(50));
             row.add(avatar, BorderLayout.WEST);
             if (selected || focused) row.setBorder(BorderFactory.createCompoundBorder(
                     BorderFactory.createLineBorder(AppTheme.PRIMARY, 2, true), new EmptyBorder(3, 6, 5, 6)));

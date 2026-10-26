@@ -8,16 +8,19 @@ import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.util.List;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Locale;
 import java.util.Map;
 
 /** Uses the order, ranks and statistics supplied by RANKING_UPDATE. */
 final class RankingPanel extends JPanel {
-    record Entry(int rank, String username, int rating, int wins, int games, double winRate) {
+    record Entry(int rank, String username, int rating, int wins, int games, double winRate, String avatar) {
         static Entry from(Map<String, Object> row) {
             return new Entry(((Number) row.get("rank")).intValue(), String.valueOf(row.get("username")),
                     ((Number) row.get("rating")).intValue(), ((Number) row.get("wins")).intValue(),
-                    ((Number) row.get("games")).intValue(), ((Number) row.get("winRate")).doubleValue());
+                    ((Number) row.get("games")).intValue(), ((Number) row.get("winRate")).doubleValue(),
+                    java.util.Objects.toString(row.get("avatar"), ""));
         }
         String rateText() { return String.format(Locale.forLanguageTag("vi-VN"), "%.1f%%", winRate); }
     }
@@ -41,9 +44,14 @@ final class RankingPanel extends JPanel {
 
     RankingPanel(String username, List<Map<String, Object>> rows, Runnable close) {
         super(new BorderLayout(0, 12));
+        build(username, rows, close, 0);
+    }
+
+    private void build(String username, List<Map<String, Object>> rows, Runnable close, int criterion) {
         setBackground(AppTheme.BACKGROUND);
         setBorder(new EmptyBorder(18, 20, 16, 20));
-        List<Entry> entries = rows.stream().map(Entry::from).toList();
+        List<Entry> entries = rankedEntries(rows, criterion);
+
         JPanel top = clear(new BorderLayout(0, 12));
         JPanel heading = clear(new BorderLayout());
         JPanel titles = clear(new GridLayout(2, 1, 0, 5));
@@ -76,6 +84,25 @@ final class RankingPanel extends JPanel {
 
         JPanel board = LobbyStyle.surface(new BorderLayout(), 1);
         board.setBorder(new EmptyBorder(10, 10, 10, 10));
+        JPanel sorting = clear(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        sorting.setBorder(new EmptyBorder(0, 0, 10, 0));
+        JLabel sortLabel = text("Xếp hạng theo", 13, LobbyStyle.PURPLE, true);
+        JComboBox<String> sort = new JComboBox<>(new String[]{"Tổng điểm chơi", "Tỷ lệ thắng"});
+        sort.setPreferredSize(new Dimension(180, 34));
+        sort.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 13));
+        sort.setBackground(AppTheme.INSET); sort.setForeground(LobbyStyle.PURPLE);
+        sort.setSelectedIndex(criterion);
+        sortLabel.setLabelFor(sort);
+        sort.getAccessibleContext().setAccessibleName("Xếp hạng theo");
+        sort.setToolTipText("Giảm dần theo chỉ số đã chọn; bằng tỷ lệ thắng thì ưu tiên điểm cao hơn.");
+        sort.addActionListener(e -> {
+            int selected = sort.getSelectedIndex();
+            removeAll();
+            build(username, rows, close, selected);
+            revalidate(); repaint();
+        });
+        sorting.add(sortLabel); sorting.add(sort);
+        board.add(sorting, BorderLayout.NORTH);
         DefaultTableModel model = new DefaultTableModel(new String[]{"Hạng", "Người chơi", "Điểm", "Thắng / Trận", "Tỷ lệ thắng"}, 0) {
             @Override public boolean isCellEditable(int row, int column) { return false; }
         };
@@ -115,7 +142,7 @@ final class RankingPanel extends JPanel {
                 setForeground(self ? LoginPanel.CYAN : entry.rank() <= 3 ? medalColor(entry.rank()) : LoginPanel.INK);
                 setFont(t.getFont().deriveFont(self || entry.rank() <= 3 ? Font.BOLD : Font.PLAIN));
                 setHorizontalAlignment(column == 1 ? LEFT : CENTER);
-                setIcon(column == 1 ? LobbyStyle.cat(30) : column == 0 && entry.rank() <= 3
+                setIcon(column == 1 ? ProfilePanel.icon(entry.avatar(), 30) : column == 0 && entry.rank() <= 3
                         ? LobbyStyle.achievementIcon(true) : null);
                 setIconTextGap(10);
                 setBorder(self ? BorderFactory.createCompoundBorder(
@@ -143,7 +170,7 @@ final class RankingPanel extends JPanel {
         Entry self = entries.stream().filter(e -> e.username().equalsIgnoreCase(username)).findFirst().orElse(null);
         JLabel mine = text(self == null ? "Tài khoản của bạn chưa có trong bảng xếp hạng."
                 : "Hạng của bạn: " + self.rank() + "   •   Điểm: " + self.rating(), 14, LoginPanel.CYAN, true);
-        mine.setIcon(self == null ? null : LobbyStyle.cat(42));
+        mine.setIcon(self == null ? null : ProfilePanel.icon(self.avatar(), 42));
         mine.setIconTextGap(12);
         footer.add(mine);
         JButton done = LobbyStyle.button("Đóng", true);
@@ -151,6 +178,23 @@ final class RankingPanel extends JPanel {
         done.addActionListener(e -> close.run());
         footer.add(done, BorderLayout.EAST);
         add(footer, BorderLayout.SOUTH);
+    }
+
+    static List<Entry> rankedEntries(List<Map<String, Object>> rows, int criterion) {
+        List<Entry> entries = rows.stream().map(Entry::from).toList();
+        // The server already supplies the complete score ranking; retain its tie ordering.
+        if (criterion == 0) return entries;
+        List<Entry> sorted = new ArrayList<>(entries);
+        sorted.sort(Comparator.comparingDouble(Entry::winRate).reversed()
+                .thenComparing(Comparator.comparingInt(Entry::rating).reversed())
+                .thenComparing(Comparator.comparingInt(Entry::wins).reversed())
+                .thenComparingInt(Entry::rank));
+        List<Entry> ranked = new ArrayList<>();
+        for (int i = 0; i < sorted.size(); i++) {
+            Entry e = sorted.get(i);
+            ranked.add(new Entry(i + 1, e.username(), e.rating(), e.wins(), e.games(), e.winRate(), e.avatar()));
+        }
+        return List.copyOf(ranked);
     }
 
     private static Color medalColor(int rank) {
@@ -198,7 +242,7 @@ final class RankingPanel extends JPanel {
                 LobbyStyle.star(p, 21, 55 + i * 15, 4, edge);
                 LobbyStyle.star(p, w - 22, 55 + i * 15, 4, edge);
             }
-            if (entry != null) LobbyStyle.cat(42).paintIcon(this, p, cx - 21, 45);
+            if (entry != null) ProfilePanel.icon(entry.avatar(), 42).paintIcon(this, p, cx - 21, 45);
             p.setColor(LoginPanel.INK); p.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 14));
             String name = entry == null ? "Chưa có người chơi" : entry.username() + (entry.username().equalsIgnoreCase(self) ? " [Bạn]" : "");
             while (p.getFontMetrics().stringWidth(name) > w - 32 && p.getFont().getSize() > 10)

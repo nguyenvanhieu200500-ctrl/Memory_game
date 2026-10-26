@@ -8,6 +8,7 @@
 - Màn hình đăng nhập hai cột tông kem, tím và xanh ngọc, có nút hiện/ẩn mật khẩu.
 - Tách riêng màn hình đăng ký và đăng nhập; đăng nhập không còn tự tạo tài khoản, đồng thời chặn đăng nhập trùng phiên.
 - Sảnh chờ giao diện Vườn kẹo: nền kem, khung trắng, tím và xanh ngọc, có danh sách online, ghép nhanh, phòng riêng và thanh hồ sơ/âm thanh. Tên người chơi, xu, điểm xếp hạng, số trận thắng và trạng thái cập nhật từ backend.
+- Nút **Hồ sơ** trong sảnh: xem thông tin tài khoản, đổi mật khẩu bằng mật khẩu hiện tại, chọn avatar PNG/JPG (dưới 10 MB, tự cắt vuông 128×128), hoặc trở lại mèo mặc định. Avatar được lưu theo tài khoản và hiển thị ở danh sách online/bảng xếp hạng. Server tự bổ sung cột `users.avatar` cho MySQL khi khởi động; dữ liệu tài khoản cũ vẫn được giữ.
 - Ghép trận tự động cho 2, 3 hoặc 4 người theo đúng kích thước bàn đã chọn; phòng do Server điều phối, không gán chủ phòng cho người chơi.
 - Ba chế độ bàn: 4×4 (8 cặp), 6×6 (18 cặp) và 8×8 (32 cặp).
 - Tạo phòng, vào phòng bằng mã, gửi/chấp nhận/từ chối lời mời 10 giây.
@@ -134,3 +135,14 @@ Người được mời nhận bảng nhỏ hiển thị người mời, tên/m�
 - Biên dịch và khởi động lại cả server lẫn client để sử dụng các thông điệp kết bạn/thì thầm mới.
 
 Bấm **+ ở sảnh** để mở **Thiết lập trận đấu**, chọn tên phòng, số người, chủ đề và độ khó, rồi bấm **Tạo phòng và gửi lời mời**. Server tạo phòng trước và gửi mã phòng thật; nếu người nhận đã bận hoặc offline thì không tạo phòng. Nút **+ trong phòng chờ** vẫn mời ngay vào phòng hiện tại. Cần cập nhật và khởi động lại cả server lẫn client cho luồng này.
+
+### Kiểm thử hồ sơ cá nhân
+
+Sau khi chạy `sh compile.sh`:
+
+```sh
+javac -encoding UTF-8 -cp out -d out test/ProfileTest.java
+MEMORY_GAME_STORAGE=file java -Djava.awt.headless=true -cp out memorygame.test.ProfileTest
+```
+
+Kiểm thử dùng server cổng 12481 và thư mục tạm riêng: xác thực, mật khẩu sai/ngắn, ảnh lỗi, lưu avatar, đổi mật khẩu, khởi động lại và đặt avatar mặc định.
