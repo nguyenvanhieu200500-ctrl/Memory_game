@@ -51,6 +51,25 @@ final class WhisperHistory {
         List<ChatEntry> messages = new ArrayList<>(messages(peer)); messages.add(entry);
         while (messages.size() > Protocol.CHAT_HISTORY_LIMIT) messages.remove(0);
         conversations.put(key(peer), new Conversation(peer, List.copyOf(messages)));
+        persist();
+    }
+
+    void mergeServer(Map<String, List<ChatEntry>> history) throws IOException {
+        for (var conversation : history.entrySet()) {
+            String peer = conversation.getKey();
+            List<ChatEntry> merged = new ArrayList<>(messages(peer));
+            // Remove matching cached copies once, preserving intentionally repeated messages.
+            for (ChatEntry entry : conversation.getValue()) merged.remove(entry);
+            merged.addAll(conversation.getValue());
+            merged.sort(Comparator.comparingLong(ChatEntry::timestamp));
+            if (merged.size() > Protocol.CHAT_HISTORY_LIMIT)
+                merged = new ArrayList<>(merged.subList(merged.size() - Protocol.CHAT_HISTORY_LIMIT, merged.size()));
+            if (!merged.isEmpty()) conversations.put(key(peer), new Conversation(peer, List.copyOf(merged)));
+        }
+        persist();
+    }
+
+    private void persist() throws IOException {
         if (file == null) return;
         Properties data = new Properties();
         List<Conversation> all = conversations(); data.setProperty("count", String.valueOf(all.size()));

@@ -25,7 +25,7 @@ public final class GameServer implements AutoCloseable {
     public static final int TURN_SECONDS = 15;
     public static final int WIN_COINS = 50;
     public static final int LOSS_COINS = 10;
-    private static final List<ShopProduct> SHOP_PRODUCTS = List.of(
+    static final List<ShopProduct> SHOP_PRODUCTS = List.of(
             new ShopProduct("theme_classic", "Mặt thẻ Cổ điển", "Bề mặt 3D tối giản với họa tiết dập chìm", 0, "THEME", "#6D28D9"),
             new ShopProduct("theme_ocean", "Mặt thẻ Đại dương", "Sóng nước chuyển động và ánh sáng lướt trên mặt thẻ", 100, "THEME", "#0E7490"),
             new ShopProduct("theme_violet", "Mặt thẻ Tím neon", "Viền neon phát sáng và hạt sao chuyển động", 180, "THEME", "#6D28D9"),
@@ -38,6 +38,7 @@ public final class GameServer implements AutoCloseable {
     private final Path stateFile;
     private final boolean mysqlStorage;
     private final DatabaseStore databaseStore;
+    private final WhisperStore whisperStore;
     private final Object lock = new Object();
     private final ExecutorService clients = Executors.newCachedThreadPool();
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(4);
@@ -51,6 +52,7 @@ public final class GameServer implements AutoCloseable {
     private final Map<String, Invite> invites = new HashMap<>();
     private final Map<String, ScheduledFuture<?>> disconnectTasks = new HashMap<>();
     private volatile boolean running;
+    private volatile boolean closed;
     private ServerSocket serverSocket;
 
     public GameServer(int port, Path dataDirectory) {
@@ -66,6 +68,7 @@ public final class GameServer implements AutoCloseable {
             }
         }
         loadState();
+        whisperStore = new WhisperStore(databaseStore, dataDirectory.resolve("private-messages.bin"));
         Path friendsFile = stateFile.resolveSibling("friends.properties");
         if (Files.exists(friendsFile)) {
             try (InputStream in = Files.newInputStream(friendsFile)) { friendships.load(in); }
@@ -79,6 +82,20 @@ public final class GameServer implements AutoCloseable {
     public void start() throws IOException {
         Files.createDirectories(stateFile.getParent());
         serverSocket = new ServerSocket(port);
+        try {
+            if (mysqlStorage) {
+                databaseStore.acquireServerLease();
+                recoverGames();
+                scheduler.scheduleAtFixedRate(() -> { synchronized(lock) {
+                    if(closed)return;
+                    try { databaseStore.heartbeatServerLease(); }
+                    catch(RuntimeException e){try{close();}catch(IOException ignored){}return;}
+                } },30,30,TimeUnit.SECONDS);
+                scheduler.scheduleAtFixedRate(() -> { synchronized(lock) {
+                    if(!closed) for(Room r:new ArrayList<>(rooms.values()))if(r.game!=null && !r.game.paused && !r.game.finished)checkpoint(r);
+                } },1,1,TimeUnit.SECONDS);
+            }
+        } catch (RuntimeException e) { if(mysqlStorage)databaseStore.releaseServerLease();serverSocket.close();throw e; }
         running = true;
         System.out.printf("Memory Game Server đang chạy tại cổng %d%n", port);
         while (running) {
@@ -94,12 +111,29 @@ public final class GameServer implements AutoCloseable {
 
     @Override
     public void close() throws IOException {
-        running = false;
-        if (serverSocket != null) serverSocket.close();
-        clients.shutdownNow();
-        scheduler.shutdownNow();
         synchronized (lock) {
-            saveState();
+            if (closed) return;
+            closed = true;
+            running = false;
+            scheduler.shutdownNow();
+            try {
+                if (mysqlStorage) for (Room room : rooms.values()) {
+                    Game game=room.game;
+                    if (game != null) {
+                        byte[] payload=encodeSnapshot(room);
+                        // Completed matches cannot be rewritten as snapshots after an uncertain commit.
+                        if(databaseStore.playingSnapshots().stream().anyMatch(stored->stored.id().equals(game.id)))
+                            databaseStore.saveSnapshot(game.id,payload);
+                    }
+                }
+                saveState();
+            } catch (RuntimeException e) { throw new IOException("Không lưu được trạng thái dừng server",e); }
+            finally {
+                if (serverSocket != null) serverSocket.close();
+                for (ClientHandler client : online.values()) try { client.socket.close(); } catch (IOException ignored) { }
+                clients.shutdownNow();
+                if(mysqlStorage)databaseStore.releaseServerLease();
+            }
         }
     }
 
@@ -131,7 +165,7 @@ public final class GameServer implements AutoCloseable {
                                 game.states[i], game.matchedOwners[i]));
                     }
                 }
-                String status = room.playing ? "Đang chơi" : room.postGame ? "Kết thúc / chờ chơi lại"
+                String status = game != null && game.paused ? "Tạm dừng / chờ xác nhận" : room.playing ? "Đang chơi" : room.postGame ? "Kết thúc / chờ chơi lại"
                         : room.countdownDeadline > 0 ? "Đếm ngược" : "Chờ sẵn sàng";
                 snapshots.add(new RoomSnapshot(room.code, room.boardSize, room.matchmaking, status,
                         List.copyOf(players), List.copyOf(cards),
@@ -149,6 +183,7 @@ public final class GameServer implements AutoCloseable {
 
     private void handle(ClientHandler client, Message message) {
         synchronized (lock) {
+            if (closed) return;
             if (message.type() != Type.LOGIN && message.type() != Type.REGISTER && client.username == null) {
                 client.error("Bạn cần đăng nhập trước.");
                 return;
@@ -174,6 +209,7 @@ public final class GameServer implements AutoCloseable {
                     case FRIEND_REPLY -> replyFriend(client, message.string("requestId"), message.bool("accepted"));
                     case WHISPER_SEND -> whisper(client, message.string("username"), message.string("text"));
                     case CHAT_SEND -> sendChat(client, message.string("text"));
+                    case GAME_RESUME -> confirmResume(client,message.string("matchId"));
                     case CARD_PICK -> pickCard(client, message.integer("index"));
                     case PLAY_AGAIN -> requestReplay(client);
                     case RANKING_REQUEST -> sendRanking(client);
@@ -232,6 +268,11 @@ public final class GameServer implements AutoCloseable {
                 .with("equippedTheme", user.equippedTheme)
                 .with("equippedTitle", user.equippedTitle));
 
+        try {
+            client.send(Message.of(Type.WHISPER_HISTORY).with("conversations", whisperStore.history(client.username)));
+        } catch (Exception e) {
+            client.error("Không thể tải lịch sử tin nhắn từ server. Vui lòng đăng nhập lại để thử lại.");
+        }
         sendFriends(client);
 
         Room room = roomOf(user.username);
@@ -263,8 +304,13 @@ public final class GameServer implements AutoCloseable {
             client.error("Tên tài khoản đã tồn tại.");
             return;
         }
-        users.put(userKey, new UserRecord(username, hash(password)));
-        saveState();
+        UserRecord created=new UserRecord(username, hash(password));
+        if (mysqlStorage) databaseStore.saveUsers(Map.of(userKey,created));
+        users.put(userKey, created);
+        if (!mysqlStorage) {
+            try { persistState(); }
+            catch(Exception e) { users.remove(userKey); client.error("Không lưu được tài khoản. Vui lòng thử lại."); return; }
+        }
         client.send(Message.of(Type.REGISTER_OK).with("username", username));
     }
 
@@ -378,7 +424,7 @@ public final class GameServer implements AutoCloseable {
         Room room = new Room(newRoomCode(), user.username, normalizeBoardSize(requestedBoardSize));
         room.name = name.isEmpty() ? "Phòng " + room.code : name;
         room.capacity = capacity;
-        room.cardTheme = cardTheme;
+        room.cardTheme = cardTheme.isEmpty() ? "FRUIT" : cardTheme;
         room.players.add(user.username);
         rooms.put(room.code, room);
         user.status = "ROOM";
@@ -550,18 +596,178 @@ public final class GameServer implements AutoCloseable {
         }, 3, TimeUnit.SECONDS);
     }
 
+    /** Server-only serialization: no hidden card values are included in protocol messages. */
+    private record Snapshot(Room room, long turnRemaining, long idleRemaining, long actionRemaining) implements Serializable {
+        @Serial private static final long serialVersionUID=1L;
+    }
+
+    private byte[] encodeSnapshot(Room room) {
+        Game g=room.game;long now=System.currentTimeMillis();
+        long turn=g.paused?g.remainingTurn:Math.max(0,g.deadline-now);
+        long idle=g.paused?g.remainingIdle:Math.max(0,g.lastValidAction+60_000-now);
+        long action=g.paused?g.remainingAction:Math.max(0,g.actionDeadline-now);
+        try(var bytes=new ByteArrayOutputStream();var out=new ObjectOutputStream(bytes)) {
+            out.writeObject(new Snapshot(room,Math.min(15_000,turn),Math.min(60_000,idle),Math.min(1310,action)));
+            out.flush();return bytes.toByteArray();
+        }catch(IOException e){throw new UncheckedIOException(e);}
+    }
+    private Snapshot decodeSnapshot(byte[] payload) throws IOException,ClassNotFoundException {
+        if(payload==null || payload.length>1_000_000)throw new IOException("Snapshot thiếu hoặc quá lớn");
+        try(var in=new ObjectInputStream(new ByteArrayInputStream(payload))) {
+            in.setObjectInputFilter(info->{
+                if(info.depth()>40 || info.references()>10000 || info.arrayLength()>10000 || info.streamBytes()>1_000_000)
+                    return ObjectInputFilter.Status.REJECTED;
+                Class<?> type=info.serialClass();if(type==null)return ObjectInputFilter.Status.UNDECIDED;
+                while(type.isArray())type=type.getComponentType();
+                String name=type.getName();
+                return type.isPrimitive() || name.equals("memorygame.server.GameServer$Snapshot")
+                    || name.equals("memorygame.server.GameServer$Room") || name.equals("memorygame.server.GameServer$Game")
+                    || name.equals("memorygame.common.Protocol$ChatEntry") || name.startsWith("java.lang.") || name.startsWith("java.util.")
+                    ?ObjectInputFilter.Status.ALLOWED:ObjectInputFilter.Status.REJECTED;
+            });
+            Object object=in.readObject();if(!(object instanceof Snapshot snapshot))throw new IOException("Sai định dạng snapshot");
+            return snapshot;
+        }
+    }
+    private void validateSnapshot(Snapshot s,DatabaseStore.StoredSnapshot stored) throws IOException {
+        Room r=s.room();Game g=r==null?null:r.game;
+        if(g==null || !r.playing || r.postGame || !g.id.equals(stored.id()) || !r.code.equals(stored.room())
+                || r.boardSize!=stored.board() || !r.cardTheme.equals(stored.theme()) || g.startedAt!=stored.started()
+                || !new HashSet<>(g.players).equals(stored.players()) || g.players.size()!=stored.playerCount()
+                || g.players.size()<2 || g.players.size()>4 || g.boardSize!=r.boardSize
+                || g.totalPairs!=g.boardSize*g.boardSize/2 || r.capacity<g.players.size() || r.capacity>4
+                || !Set.of(4,6,8).contains(g.boardSize) || !Set.of("FRUIT","ANIMALS","FOOD","VEHICLES").contains(r.cardTheme)
+                || r.name==null || r.name.length()>40 || (r.matchmaking ? !"".equals(r.host) : !g.players.contains(r.host))
+                || !g.players.containsAll(r.players) || new HashSet<>(r.players).size()!=r.players.size()
+                || !users.keySet().containsAll(g.players.stream().map(GameServer::key).toList()))throw new IOException("Cấu hình trận không khớp");
+        int cells=g.boardSize*g.boardSize;
+        if(g.values.length!=cells || g.states.length!=cells || g.matchedOwners.length!=cells
+                || !g.scores.keySet().equals(stored.players()) || !g.players.containsAll(g.active) || !g.players.containsAll(g.forfeited)
+                || !Collections.disjoint(g.active,g.forfeited) || g.active.size()+g.forfeited.size()!=g.players.size()
+                || g.currentIndex<0 || g.currentIndex>=g.players.size() || g.turns<0 || g.turnToken<0
+                || s.turnRemaining()<0 || s.turnRemaining()>15_000 || s.idleRemaining()<0 || s.idleRemaining()>60_000
+                || s.actionRemaining()<0 || s.actionRemaining()>1310 || !Set.of("TURN","WRONG_PAIR","MATCH_DELAY","SETTLING").contains(g.phase))
+            throw new IOException("Trạng thái trận không hợp lệ");
+        int[] counts=new int[g.totalPairs+1];Map<String,Integer> scored=new HashMap<>();Set<Integer> faceUp=new HashSet<>();int matched=0;
+        Map<Integer,String> owners=new HashMap<>();Map<Integer,Integer> matchedCounts=new HashMap<>();
+        for(int i=0;i<cells;i++) {
+            int value=g.values[i],state=g.states[i];String owner=g.matchedOwners[i];
+            if(value<1 || value>g.totalPairs || state<0 || state>2)throw new IOException("Thẻ không hợp lệ");
+            counts[value]++;
+            if(state==1)faceUp.add(i);
+            if(state==2) {
+                if(owner==null || !g.players.contains(owner))throw new IOException("Người ghép không hợp lệ");
+                if(owners.containsKey(value) && !owner.equals(owners.get(value)))throw new IOException("Chủ cặp thẻ không khớp");
+                owners.put(value,owner);matchedCounts.merge(value,1,Integer::sum);scored.merge(owner,1,Integer::sum);matched++;
+            } else if(owner!=null)throw new IOException("Thẻ chưa ghép có chủ");
+        }
+        for(int v=1;v<=g.totalPairs;v++)if(counts[v]!=2 || (matchedCounts.containsKey(v)&&matchedCounts.get(v)!=2))throw new IOException("Thiếu cặp thẻ");
+        if(matched!=g.matchedPairs*2 || !faceUp.equals(new HashSet<>(g.selected)) || g.selected.size()!=faceUp.size() || faceUp.size()>2)
+            throw new IOException("Các thẻ được chọn không khớp");
+        for(String name:g.players)if(g.scores.get(name)==null || g.scores.get(name)*2!=scored.getOrDefault(name,0))throw new IOException("Điểm không khớp thẻ");
+        boolean wrong=g.phase.equals("WRONG_PAIR");
+        if(wrong!=(g.resolving) || (wrong && (g.selected.size()!=2 || g.values[g.selected.get(0)]==g.values[g.selected.get(1)]))
+                || (g.phase.equals("TURN") && (g.selected.size()>1 || !g.active.contains(g.current())))
+                || (g.phase.equals("MATCH_DELAY") && !g.selected.isEmpty())
+                || g.finished!=g.phase.equals("SETTLING") || (g.finished && (g.endReason==null || g.endedAt<g.startedAt)))
+            throw new IOException("Giai đoạn xử lý không hợp lệ");
+    }
+    private Room pausedRoom(Snapshot s,byte[] payload) {
+        Room r=s.room();Game g=r.game;
+        g.paused=true;g.remainingTurn=s.turnRemaining();g.remainingIdle=s.idleRemaining();g.remainingAction=s.actionRemaining();
+        g.resumeVotes.clear();g.deadline=0;g.actionDeadline=0;
+        r.lastCheckpoint=payload;r.players.removeIf(g.forfeited::contains);
+        if(!r.matchmaking && !r.players.isEmpty() && !r.players.contains(r.host))r.host=r.players.get(0);
+        return r;
+    }
+    private void recoverGames() {
+        for(var stored:databaseStore.playingSnapshots()) {
+            Room room;
+            try {
+                if(stored.version()!=1 || stored.payload()==null || !DatabaseStore.checksum(stored.payload()).equals(stored.checksum()))throw new IOException("Snapshot thiếu/hỏng");
+                Snapshot snapshot=decodeSnapshot(stored.payload());validateSnapshot(snapshot,stored);
+                room=pausedRoom(snapshot,stored.payload());
+                if(rooms.containsKey(room.code) || room.game.active.stream().anyMatch(name->roomOf(name)!=null))throw new IOException("Trùng phòng hoặc người chơi");
+            }catch(Exception e) {
+                databaseStore.interruptMatch(stored.id(),System.currentTimeMillis(),"Không khôi phục được ván: snapshot thiếu hoặc không hợp lệ",Map.of(),Set.of());
+                System.err.println("Không khôi phục ván "+stored.id()+": "+e.getMessage());continue;
+            }
+            rooms.put(room.code,room);
+            for(String name:room.players)user(name).status="PLAYING";
+            if(room.game.phase.equals("SETTLING")) {
+                room.game.finished=false;
+                finishGame(room,room.game.endReason,room.game.endAbnormal);
+            }
+        }
+    }
+    private void cancelGameTimers(Game game) {
+        if(game.turnFuture!=null)game.turnFuture.cancel(false);
+        if(game.inactivityFuture!=null)game.inactivityFuture.cancel(false);
+        if(game.actionFuture!=null)game.actionFuture.cancel(false);
+    }
+    private boolean checkpoint(Room room) {
+        if(!mysqlStorage)return true;
+        try {
+            byte[] payload=encodeSnapshot(room);databaseStore.saveSnapshot(room.game.id,payload);room.lastCheckpoint=payload;return true;
+        }catch(RuntimeException failure) {
+            cancelGameTimers(room.game);
+            try {
+                Room restored=pausedRoom(decodeSnapshot(room.lastCheckpoint),room.lastCheckpoint);
+                rooms.put(room.code,restored);
+                for(String name:restored.players)user(name).status="PLAYING";
+                for(String name:restored.players){ClientHandler client=online.get(key(name));if(client!=null)sendGameState(client,restored);}
+            }catch(Exception e){room.game.paused=true;}
+            broadcast(room,Message.of(Type.ERROR).with("message","Chưa lưu được trạng thái ván. Ván đã tạm dừng; hãy xác nhận tiếp tục khi kết nối database ổn định."));
+            return false;
+        }
+    }
+    private void sendRecoveryState(Room room) {
+        Game g=room.game;
+        broadcast(room,Message.of(Type.GAME_PAUSED).with("matchId",g.id).with("paused",g.paused)
+                .with("confirmed",new ArrayList<>(g.resumeVotes)).with("required",new ArrayList<>(g.active)));
+    }
+    private void confirmResume(ClientHandler client,String matchId) {
+        Room room=roomOf(client.username);Game g=room==null?null:room.game;
+        if(g==null || !g.id.equals(matchId) || !g.paused || g.finished || !g.active.contains(client.username)) {
+            client.error("Không có ván tạm dừng cần xác nhận.");return;
+        }
+        g.resumeVotes.add(client.username);
+        if(!checkpoint(room))return;
+        if(g.resumeVotes.containsAll(g.active) && g.active.stream().allMatch(name->online.containsKey(key(name)))) {
+            long now=System.currentTimeMillis();g.paused=false;
+            g.deadline=now+g.remainingTurn;g.lastValidAction=now-(60_000-g.remainingIdle);g.actionDeadline=now+g.remainingAction;
+            if(!checkpoint(room))return;
+            for(String name:room.players){ClientHandler c=online.get(key(name));if(c!=null)sendGameState(c,room);}
+            armGameTimers(room);
+        } else sendRecoveryState(room);
+    }
+
     private void startGame(Room room) {
+        Game next = new Game(room.players, room.boardSize, random);
+        next.deadline=System.currentTimeMillis()+15_000;
+        room.playing=true;room.game=next;
+        if (mysqlStorage) {
+            try {
+                byte[] payload=encodeSnapshot(room);
+                databaseStore.beginMatch(next.id,room.code,room.boardSize,room.cardTheme,next.startedAt,next.players,payload);
+                room.lastCheckpoint=payload;
+            } catch (RuntimeException e) {
+                room.playing=false;room.game=null;cancelRoomCountdown(room);
+                broadcast(room,Message.of(Type.ERROR).with("message","Không tạo được trận trong database. Hãy thử bắt đầu lại."));
+                broadcastRoom(room);return;
+            }
+        }
         room.playing = true;
         room.postGame = false;
         room.replayVotes.clear();
         if (room.replayFuture != null) room.replayFuture.cancel(false);
         cancelRoomCountdown(room);
         room.chat.clear();
-        room.game = new Game(room.players, room.boardSize, random);
+        room.game = next;
         for (String name : room.players) user(name).status = "PLAYING";
         broadcastGameStart(room);
-        beginTurn(room);
-        scheduleInactivity(room);
+        broadcast(room,Message.of(Type.TURN_UPDATE).with("current",next.current()).with("deadline",next.deadline));
+        armGameTimers(room);
         broadcastLobby();
     }
 
@@ -603,6 +809,15 @@ public final class GameServer implements AutoCloseable {
         if (!room.playing && !room.postGame) cancelRoomCountdown(room);
         if (room.playing && room.game != null) forfeit(room, username, voluntary ? "bỏ cuộc" : "mất kết nối");
         room.players.remove(username);
+        if (room.game != null && !room.game.finished) {
+            if (room.game.paused && !room.game.active.contains(room.game.current()) && !room.game.active.isEmpty()) {
+                while (!room.game.active.contains(room.game.current()))
+                    room.game.currentIndex = (room.game.currentIndex + 1) % room.game.players.size();
+                room.game.phase = "TURN"; room.game.remainingTurn = 15_000;
+            }
+            if (!checkpoint(room)) return;
+            if (room.game.paused) sendRecoveryState(room);
+        }
         room.ready.remove(username);
         room.replayVotes.remove(username);
         if (room.players.isEmpty()) {
@@ -802,15 +1017,21 @@ public final class GameServer implements AutoCloseable {
         if (text.isBlank() || text.length() > Protocol.CHAT_MAX_LENGTH || text.codePoints().anyMatch(Character::isISOControl)) {
             sender.error("Tin nhắn cần có 1–300 ký tự và không chứa ký tự điều khiển."); return;
         }
+        ChatEntry entry = new ChatEntry(sender.username, text, System.currentTimeMillis());
+        try { whisperStore.append(target.username, entry); }
+        catch (Exception e) {
+            sender.error("Không thể lưu tin nhắn trên server. Tin chưa được gửi, vui lòng thử lại.");
+            return;
+        }
         Message message = Message.of(Type.WHISPER_MESSAGE).with("from", sender.username)
-                .with("to", target.username).with("entry", new ChatEntry(sender.username, text, System.currentTimeMillis()));
+                .with("to", target.username).with("entry", entry);
         target.send(message); sender.send(message);
     }
 
     private void sendChat(ClientHandler client, String text) {
         Room room = roomOf(client.username);
         if (room == null || !room.playing || room.game == null || room.game.finished
-                || !room.game.active.contains(client.username)) {
+                || !room.game.active.contains(client.username) || room.game.paused) {
             client.error("Bạn chỉ có thể chat khi đang trong trận.");
             return;
         }
@@ -823,106 +1044,114 @@ public final class GameServer implements AutoCloseable {
         ChatEntry entry = new ChatEntry(client.username, text, System.currentTimeMillis());
         room.chat.add(entry);
         while (room.chat.size() > Protocol.CHAT_HISTORY_LIMIT) room.chat.remove(0);
+        if(!checkpoint(room))return;
         broadcast(room, Message.of(Type.CHAT_MESSAGE).with("code", room.code).with("entry", entry));
     }
 
     private void pickCard(ClientHandler client, int index) {
         Room room = roomOf(client.username);
         if (room == null || !room.playing || room.game == null) {
-            client.error("Bạn không ở trong trận.");
-            return;
+            client.error("Bạn không ở trong trận."); return;
         }
         Game game = room.game;
-        if (game.finished || game.resolving || !game.current().equals(client.username)) {
-            client.error("Chưa đến lượt của bạn.");
-            return;
+        if (game.finished || game.paused || !game.phase.equals("TURN") || !game.current().equals(client.username)) {
+            client.error("Chưa đến lượt của bạn hoặc ván đang tạm dừng."); return;
         }
-        if (index < 0 || index >= game.values.length || game.states[index] != 0 || game.selected.contains(index)) {
-            client.error("Ô thẻ không hợp lệ hoặc đã được ghép.");
-            return;
+        if (index < 0 || index >= game.values.length || game.states[index] != 0) {
+            client.error("Ô thẻ không hợp lệ hoặc đã được ghép."); return;
         }
         game.states[index] = 1;
         game.selected.add(index);
         game.lastValidAction = System.currentTimeMillis();
-        scheduleInactivity(room);
+        boolean pair = game.selected.size() == 2;
+        int first = game.selected.get(0), second = index;
+        boolean match = pair && game.values[first] == game.values[second];
+        if (pair) {
+            game.turns++;
+            if (match) {
+                game.states[first] = game.states[second] = 2;
+                game.matchedOwners[first] = game.matchedOwners[second] = client.username;
+                game.matchedPairs++;
+                game.scores.merge(client.username, 1, Integer::sum);
+                game.selected.clear();
+                game.phase = "MATCH_DELAY";
+                game.actionDeadline = System.currentTimeMillis() + 400;
+            } else {
+                game.resolving = true;
+                game.phase = "WRONG_PAIR";
+                game.actionDeadline = System.currentTimeMillis() + 1310;
+            }
+        }
+        if (!checkpoint(room)) return;
         broadcast(room, Message.of(Type.CARD_REVEALED)
                 .with("index", index).with("value", game.values[index]).with("player", client.username));
-
-        if (game.selected.size() < 2) return;
-        game.resolving = true;
-        if (game.turnFuture != null) game.turnFuture.cancel(false);
-        int first = game.selected.get(0);
-        int second = game.selected.get(1);
-        boolean match = game.values[first] == game.values[second];
-        game.turns++;
-
-        if (match) {
-            game.states[first] = game.states[second] = 2;
-            game.matchedOwners[first] = game.matchedOwners[second] = client.username;
-            game.matchedPairs++;
-            game.scores.merge(client.username, 1, Integer::sum);
-            game.selected.clear();
-            game.resolving = false;
-            broadcast(room, Message.of(Type.MATCH_RESULT).with("match", true)
-                    .with("first", first).with("second", second)
-                    .with("player", client.username).with("scores", new LinkedHashMap<>(game.scores))
-                    .with("pairs", game.matchedPairs));
-            if (game.matchedPairs == game.totalPairs) {
-                finishGame(room, "Đã tìm đủ " + game.totalPairs + " cặp", false);
-            } else {
-                scheduler.schedule(() -> { synchronized (lock) { if (room.game == game && !game.finished) beginTurn(room); } },
-                        400, TimeUnit.MILLISECONDS);
-            }
-        } else {
-            broadcast(room, Message.of(Type.MATCH_RESULT).with("match", false)
-                    .with("first", first).with("second", second)
-                    .with("player", client.username).with("scores", new LinkedHashMap<>(game.scores))
-                    .with("pairs", game.matchedPairs));
-            scheduler.schedule(() -> {
-                synchronized (lock) {
-                    if (room.game != game || game.finished) return;
-                    game.states[first] = game.states[second] = 0;
-                    game.selected.clear();
-                    game.resolving = false;
-                    broadcast(room, Message.of(Type.CARD_HIDDEN).with("indexes", new int[]{first, second}));
-                    advanceTurn(room);
-                }
-            }, 1310, TimeUnit.MILLISECONDS);
-        }
+        if (pair) broadcast(room, Message.of(Type.MATCH_RESULT).with("match", match)
+                .with("first", first).with("second", second).with("player", client.username)
+                .with("scores", new LinkedHashMap<>(game.scores)).with("pairs", game.matchedPairs));
+        if (game.matchedPairs == game.totalPairs) finishGame(room, "Đã tìm đủ " + game.totalPairs + " cặp", false);
+        else armGameTimers(room);
     }
 
-    private void beginTurn(Room room) {
+    private boolean liveGame(Room room, Game game) {
+        return !closed && rooms.get(room.code) == room && room.game == game && !game.finished && !game.paused;
+    }
+
+    private void armGameTimers(Room room) {
         Game game = room.game;
-        if (game == null || game.finished) return;
-        if (!game.active.contains(game.current())) {
-            advanceTurn(room);
-            return;
-        }
+        cancelGameTimers(game);
+        if (!liveGame(room, game)) return;
+        scheduleInactivity(room);
         int token = ++game.turnToken;
-        game.deadline = System.currentTimeMillis() + TURN_SECONDS * 1000L;
-        broadcast(room, Message.of(Type.TURN_UPDATE)
-                .with("current", game.current()).with("deadline", game.deadline));
-        game.turnFuture = scheduler.schedule(() -> {
-            synchronized (lock) {
-                if (room.game != game || game.finished || game.turnToken != token || game.resolving) return;
-                if (!game.selected.isEmpty()) {
+        if (game.phase.equals("TURN")) {
+            game.turnFuture = scheduler.schedule(() -> {
+                synchronized (lock) {
+                    if (!liveGame(room, game) || game.turnToken != token) return;
                     int[] indexes = game.selected.stream().mapToInt(Integer::intValue).toArray();
                     for (int index : indexes) game.states[index] = 0;
                     game.selected.clear();
-                    broadcast(room, Message.of(Type.CARD_HIDDEN).with("indexes", indexes));
+                    advanceTurn(room, indexes);
                 }
-                advanceTurn(room);
-            }
-        }, TURN_SECONDS, TimeUnit.SECONDS);
+            }, Math.max(0, game.deadline - System.currentTimeMillis()), TimeUnit.MILLISECONDS);
+        } else {
+            game.actionFuture = scheduler.schedule(() -> {
+                synchronized (lock) {
+                    if (!liveGame(room, game) || game.turnToken != token) return;
+                    if (game.phase.equals("WRONG_PAIR")) {
+                        int[] indexes = game.selected.stream().mapToInt(Integer::intValue).toArray();
+                        for (int index : indexes) game.states[index] = 0;
+                        game.selected.clear(); game.resolving = false;
+                        advanceTurn(room, indexes);
+                    } else if (game.matchedPairs == game.totalPairs) {
+                        finishGame(room, "Đã tìm đủ " + game.totalPairs + " cặp", false);
+                    } else beginTurn(room);
+                }
+            }, Math.max(0, game.actionDeadline - System.currentTimeMillis()), TimeUnit.MILLISECONDS);
+        }
     }
 
-    private void advanceTurn(Room room) {
+    private void beginTurn(Room room) { beginTurn(room, new int[0]); }
+
+    private void beginTurn(Room room, int[] hidden) {
+        Game game = room.game;
+        if (game == null || game.finished || game.paused) return;
+        if (!game.active.contains(game.current())) { advanceTurn(room); return; }
+        game.phase = "TURN";
+        game.deadline = System.currentTimeMillis() + TURN_SECONDS * 1000L;
+        if (!checkpoint(room)) return;
+        if (hidden.length > 0) broadcast(room, Message.of(Type.CARD_HIDDEN).with("indexes", hidden));
+        broadcast(room, Message.of(Type.TURN_UPDATE).with("current", game.current()).with("deadline", game.deadline));
+        armGameTimers(room);
+    }
+
+    private void advanceTurn(Room room) { advanceTurn(room, new int[0]); }
+
+    private void advanceTurn(Room room, int[] hidden) {
         Game game = room.game;
         if (game == null || game.finished) return;
         for (int i = 0; i < game.players.size(); i++) {
             game.currentIndex = (game.currentIndex + 1) % game.players.size();
             if (game.active.contains(game.current())) {
-                beginTurn(room);
+                beginTurn(room, hidden);
                 return;
             }
         }
@@ -938,16 +1167,21 @@ public final class GameServer implements AutoCloseable {
             finishGame(room, game.active.isEmpty() ? "Tất cả đã bỏ cuộc" : "Chỉ còn một người chơi", true);
             return;
         }
+        game.resumeVotes.remove(username);
         if (game.current().equals(username)) {
-            if (game.turnFuture != null) game.turnFuture.cancel(false);
-            if (!game.selected.isEmpty()) {
-                int[] indexes = game.selected.stream().mapToInt(Integer::intValue).toArray();
-                for (int index : indexes) game.states[index] = 0;
-                game.selected.clear();
-                broadcast(room, Message.of(Type.CARD_HIDDEN).with("indexes", indexes));
-            }
+            cancelGameTimers(game);
+            int[] indexes = game.selected.stream().mapToInt(Integer::intValue).toArray();
+            for (int index : indexes) game.states[index] = 0;
+            game.selected.clear();
             game.resolving = false;
-            advanceTurn(room);
+            game.phase = "TURN";
+            if (game.paused) {
+                do { game.currentIndex = (game.currentIndex + 1) % game.players.size(); }
+                while (!game.active.contains(game.current()));
+                game.remainingTurn = 15_000;
+                if (!checkpoint(room)) return;
+                broadcast(room, Message.of(Type.CARD_HIDDEN).with("indexes", indexes));
+            } else advanceTurn(room, indexes);
         }
     }
 
@@ -958,19 +1192,23 @@ public final class GameServer implements AutoCloseable {
         long marker = game.lastValidAction;
         game.inactivityFuture = scheduler.schedule(() -> {
             synchronized (lock) {
-                if (room.game == game && !game.finished && game.lastValidAction == marker) {
+                if (liveGame(room, game) && game.lastValidAction == marker) {
                     finishGame(room, "Tất cả người chơi không hoạt động trong 60 giây", true);
                 }
             }
-        }, 60, TimeUnit.SECONDS);
+        }, Math.max(0, marker + 60_000 - System.currentTimeMillis()), TimeUnit.MILLISECONDS);
     }
 
     private void finishGame(Room room, String reason, boolean abnormal) {
         Game game = room.game;
         if (game == null || game.finished) return;
         game.finished = true;
-        if (game.turnFuture != null) game.turnFuture.cancel(false);
-        if (game.inactivityFuture != null) game.inactivityFuture.cancel(false);
+        game.phase = "SETTLING";
+        game.resolving = false;
+        game.endReason = reason; game.endAbnormal = abnormal;
+        if (game.endedAt == 0) game.endedAt = System.currentTimeMillis();
+        cancelGameTimers(game);
+        if (!checkpoint(room)) return;
 
         int top = game.active.stream().mapToInt(name -> game.scores.getOrDefault(name, 0)).max().orElse(-1);
         List<String> winners;
@@ -1010,37 +1248,82 @@ public final class GameServer implements AutoCloseable {
             if (reason.contains("không hoạt động")) delta = -1;
             else if (winner) delta = winners.size() == 1 ? 3 : 1;
             else delta = -1;
-            user.rating = Math.max(0, user.rating + delta);
-            user.games++;
-            if (winner && winners.size() == 1) user.wins++;
             int coinReward = winner ? WIN_COINS : LOSS_COINS;
-            user.coins += coinReward;
             String result = stamp + " | " + reason + " | " + game.scores.getOrDefault(name, 0)
                     + " cặp | " + (forfeited ? "Bỏ cuộc" : "Hạng " + playerPlacement)
                     + " | Xếp hạng " + (delta >= 0 ? "+" : "") + delta
                     + " | +" + coinReward + " xu";
-            user.history.add(0, result);
-            while (user.history.size() > 50) user.history.remove(user.history.size() - 1);
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("username", name);
             row.put("score", game.scores.getOrDefault(name, 0));
             row.put("placement", playerPlacement);
             row.put("winner", winner);
+            row.put("winCredit", winner && winners.size() == 1);
+            row.put("resultText", result);
             row.put("forfeited", forfeited);
             row.put("ratingDelta", delta);
             row.put("rating", user.rating);
             row.put("coinReward", coinReward);
             row.put("coins", user.coins);
             results.add(row);
-            ClientHandler walletClient = online.get(key(name));
-            if (walletClient != null) {
-                walletClient.send(Message.of(Type.WALLET_UPDATE)
-                        .with("coins", user.coins).with("earned", coinReward));
-            }
         }
-        saveState();
+        settleGame(room, game, reason, abnormal, game.endedAt, results);
+    }
+
+    private void refreshAccountStats() {
+        for (UserRecord stored : databaseStore.loadUsers().values()) {
+            UserRecord live = user(stored.username);
+            if (live == null) continue;
+            live.rating = stored.rating; live.wins = stored.wins; live.games = stored.games; live.coins = stored.coins;
+            live.ownedItems = new HashSet<>(stored.ownedItems);
+            live.history.clear(); live.history.addAll(stored.history);
+        }
+    }
+
+    private void settleGame(Room room, Game game, String reason, boolean abnormal, long ended,
+                            List<Map<String,Object>> results) {
+        if (closed) return;
+        try {
+            if (mysqlStorage) {
+                databaseStore.completeMatch(game.id, reason, abnormal, ended, results);
+                refreshAccountStats();
+            } else {
+                Map<String,int[]> before = new HashMap<>();
+                Map<String,List<String>> histories = new HashMap<>();
+                for (var row : results) {
+                    UserRecord u=user((String)row.get("username"));
+                    before.put(u.username,new int[]{u.rating,u.wins,u.games,u.coins});
+                    histories.put(u.username,new ArrayList<>(u.history));
+                    u.rating=Math.max(0,u.rating+(Integer)row.get("ratingDelta"));
+                    u.games++; if(Boolean.TRUE.equals(row.get("winCredit"))) u.wins++;
+                    u.coins+=(Integer)row.get("coinReward");
+                    u.history.add(0,(String)row.get("resultText"));
+                    while(u.history.size()>50) u.history.remove(u.history.size()-1);
+                }
+                try { persistState(); }
+                catch(Exception e) {
+                    for(var entry:before.entrySet()) {
+                        UserRecord u=user(entry.getKey()); int[] values=entry.getValue();
+                        u.rating=values[0];u.wins=values[1];u.games=values[2];u.coins=values[3];
+                        u.history.clear();u.history.addAll(histories.get(u.username));
+                    }
+                    throw e;
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Đang thử lưu lại trận " + game.id + ": " + e.getMessage());
+            broadcast(room, Message.of(Type.ERROR).with("message", "Đang lưu kết quả trận đấu. Server sẽ tự thử lại, vui lòng chờ."));
+            scheduler.schedule(() -> { synchronized(lock) { settleGame(room,game,reason,abnormal,ended,results); } }, 3, TimeUnit.SECONDS);
+            return;
+        }
+        for (var row : results) {
+            String name=(String)row.get("username"); UserRecord u=user(name);
+            row.put("rating",u.rating);row.put("coins",u.coins);
+            ClientHandler client=online.get(key(name));
+            if(client!=null) client.send(Message.of(Type.WALLET_UPDATE).with("coins",u.coins).with("earned",row.get("coinReward")));
+        }
         long replayDeadline = System.currentTimeMillis() + 30_000L;
-        broadcast(room, Message.of(Type.GAME_END).with("reason", reason)
+        broadcast(room, Message.of(Type.GAME_END).with("matchId", game.id).with("reason", reason)
                 .with("results", (Serializable) results).with("replayDeadline", replayDeadline));
 
         room.playing = false;
@@ -1078,7 +1361,7 @@ public final class GameServer implements AutoCloseable {
         try {
             memorygame.common.AvatarImages.decode(avatar);
             u.avatar = avatar;
-            persistState();
+            if (mysqlStorage) databaseStore.updateAvatar(u.username, avatar); else persistState();
         } catch (Exception e) {
             u.avatar = previous;
             profileResult(client, "avatar", false, "Không lưu được ảnh. Hãy chọn PNG/JPG hợp lệ và thử lại.");
@@ -1099,7 +1382,7 @@ public final class GameServer implements AutoCloseable {
         }
         String previous = u.passwordHash;
         u.passwordHash = hash(next);
-        try { persistState(); }
+        try { if (mysqlStorage) databaseStore.updatePassword(u.username, previous, u.passwordHash); else persistState(); }
         catch (Exception e) {
             u.passwordHash = previous;
             profileResult(client, "password", false, "Không lưu được mật khẩu. Vui lòng thử lại."); return;
@@ -1131,13 +1414,13 @@ public final class GameServer implements AutoCloseable {
 
     private void sendHistory(ClientHandler client) {
         client.send(Message.of(Type.HISTORY_UPDATE)
-                .with("history", new ArrayList<>(user(client.username).history)));
+                .with("history", mysqlStorage ? databaseStore.history(client.username) : new ArrayList<>(user(client.username).history)));
     }
 
     private void sendShop(ClientHandler client) {
         UserRecord user = user(client.username);
         List<Map<String, Object>> products = new ArrayList<>();
-        for (ShopProduct product : SHOP_PRODUCTS) {
+        for (ShopProduct product : mysqlStorage ? databaseStore.productsFor(client.username) : SHOP_PRODUCTS) {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("id", product.id);
             row.put("name", product.name);
@@ -1157,22 +1440,22 @@ public final class GameServer implements AutoCloseable {
 
     private void buyProduct(ClientHandler client, String productId) {
         UserRecord user = user(client.username);
-        ShopProduct product = productById(productId);
-        if (product == null || product.price == 0) {
-            client.error("Vật phẩm không hợp lệ.");
-            return;
+        if (mysqlStorage) {
+            String error = databaseStore.purchase(client.username, productId);
+            refreshAccountStats();
+            if (!error.isEmpty()) { client.error(error); return; }
+        } else {
+            ShopProduct product = productById(productId);
+            if (product == null || product.price <= 0) { client.error("Vật phẩm không hợp lệ."); return; }
+            if (user.ownedItems.contains(product.id)) { client.error("Bạn đã sở hữu vật phẩm này."); return; }
+            if (user.coins < product.price) { client.error("Bạn chưa đủ xu để mua vật phẩm này."); return; }
+            user.coins -= product.price; user.ownedItems.add(product.id);
+            try { persistState(); }
+            catch (Exception e) {
+                user.coins += product.price; user.ownedItems.remove(product.id);
+                client.error("Không lưu được giao dịch. Vui lòng thử lại."); return;
+            }
         }
-        if (user.ownedItems.contains(product.id)) {
-            client.error("Bạn đã sở hữu vật phẩm này.");
-            return;
-        }
-        if (user.coins < product.price) {
-            client.error("Bạn chưa đủ xu để mua vật phẩm này.");
-            return;
-        }
-        user.coins -= product.price;
-        user.ownedItems.add(product.id);
-        saveState();
         client.send(Message.of(Type.WALLET_UPDATE).with("coins", user.coins).with("earned", 0));
         sendShop(client);
     }
@@ -1184,17 +1467,26 @@ public final class GameServer implements AutoCloseable {
             client.error("Bạn chưa sở hữu vật phẩm này.");
             return;
         }
+        if (!product.type.equals("THEME") && !product.type.equals("TITLE")) { client.error("Vật phẩm cũ không hỗ trợ trang bị."); return; }
+        String previousTheme=user.equippedTheme, previousTitle=user.equippedTitle;
         if (product.type.equals("THEME")) user.equippedTheme = product.id;
-        else if (product.type.equals("TITLE")) user.equippedTitle = product.id;
-        saveState();
+        else user.equippedTitle = product.id;
+        try {
+            if (mysqlStorage) databaseStore.updateEquipment(user.username, product.id, product.type.equals("THEME"));
+            else persistState();
+        } catch(Exception e) {
+            user.equippedTheme=previousTheme;user.equippedTitle=previousTitle;
+            client.error("Không lưu được trang bị. Vui lòng thử lại.");return;
+        }
         sendShop(client);
         broadcastLobby();
         Room room = roomOf(client.username);
         if (room != null) broadcastRoom(room);
     }
 
-    private static ShopProduct productById(String productId) {
-        return SHOP_PRODUCTS.stream().filter(product -> product.id.equals(productId)).findFirst().orElse(null);
+    private ShopProduct productById(String productId) {
+        if (productId == null || productId.isBlank()) return null;
+        return (mysqlStorage ? databaseStore.products(false) : SHOP_PRODUCTS).stream().filter(product -> product.id.equals(productId)).findFirst().orElse(null);
     }
 
     private void broadcastLobby() {
@@ -1241,7 +1533,8 @@ public final class GameServer implements AutoCloseable {
 
     private void broadcastGameStart(Room room) {
         Game game = room.game;
-        broadcast(room, Message.of(Type.GAME_START)
+        broadcast(room, Message.of(Type.GAME_START).with("matchId", game.id)
+                .with("paused",game.paused).with("resolving",game.resolving).with("confirmed",new ArrayList<>(game.resumeVotes)).with("required",new ArrayList<>(game.active))
                 .with("code", room.code).with("chat", new ArrayList<>(room.chat))
                 .with("roomName", room.name).with("capacity", room.capacity).with("cardTheme", room.cardTheme)
                 .with("boardSize", game.boardSize)
@@ -1258,7 +1551,8 @@ public final class GameServer implements AutoCloseable {
     private void sendGameState(ClientHandler client, Room room) {
         Game game = room.game;
         if (game == null) return;
-        client.send(Message.of(Type.GAME_START)
+        client.send(Message.of(Type.GAME_START).with("matchId", game.id)
+                .with("paused",game.paused).with("resolving",game.resolving).with("confirmed",new ArrayList<>(game.resumeVotes)).with("required",new ArrayList<>(game.active))
                 .with("code", room.code).with("chat", new ArrayList<>(room.chat))
                 .with("roomName", room.name).with("capacity", room.capacity).with("cardTheme", room.cardTheme)
                 .with("boardSize", game.boardSize)
@@ -1270,7 +1564,7 @@ public final class GameServer implements AutoCloseable {
                 .with("owners", game.matchedOwners.clone())
                 .with("current", game.current())
                 .with("pairs", game.matchedPairs));
-        client.send(Message.of(Type.TURN_UPDATE).with("current", game.current()).with("deadline", game.deadline));
+        client.send(Message.of(Type.TURN_UPDATE).with("current", game.current()).with("deadline", game.paused?0:game.deadline).with("paused",game.paused));
     }
 
     private void broadcast(Room room, Message message) {
@@ -1289,6 +1583,7 @@ public final class GameServer implements AutoCloseable {
 
     private void disconnected(ClientHandler client) {
         synchronized (lock) {
+            if (closed) return;
             if (client.username == null) return;
             String userKey = key(client.username);
             if (online.get(userKey) != client) return;
@@ -1310,11 +1605,16 @@ public final class GameServer implements AutoCloseable {
                         broadcastRoom(room);
                     }
                 }
+                if (room != null && room.game != null && room.game.paused) {
+                    room.game.resumeVotes.remove(client.username);
+                    checkpoint(room);
+                    sendRecoveryState(room);
+                }
                 ScheduledFuture<?> old = disconnectTasks.remove(userKey);
                 if (old != null) old.cancel(false);
                 disconnectTasks.put(userKey, scheduler.schedule(() -> {
                     synchronized (lock) {
-                        if (!online.containsKey(userKey)) leaveRoom(client.username, false);
+                        if (!online.containsKey(userKey) && (room == null || room.game == null || !room.game.paused)) leaveRoom(client.username, false);
                         disconnectTasks.remove(userKey);
                     }
                 }, 30, TimeUnit.SECONDS));
@@ -1376,7 +1676,7 @@ public final class GameServer implements AutoCloseable {
         }
     }
 
-    private static String titleFor(String productId) {
+    private String titleFor(String productId) {
         ShopProduct product = productById(productId);
         return product != null && product.type.equals("TITLE") ? product.name.replace("Danh hiệu ", "") : "";
     }
@@ -1424,7 +1724,8 @@ public final class GameServer implements AutoCloseable {
     }
 
     private void persistState() throws Exception {
-        if (mysqlStorage) { databaseStore.saveUsers(users); return; }
+        // MySQL changes are persisted by their own operations, never a whole RAM snapshot.
+        if (mysqlStorage) return;
         Files.createDirectories(stateFile.getParent());
         Path temp = stateFile.resolveSibling("state.bin.tmp");
         try (ObjectOutputStream output = new ObjectOutputStream(Files.newOutputStream(temp))) {
@@ -1505,10 +1806,12 @@ public final class GameServer implements AutoCloseable {
         }
     }
 
-    private record ShopProduct(String id, String name, String description,
+    record ShopProduct(String id, String name, String description,
                                int price, String type, String color) { }
 
-    private static final class Room {
+    private static final class Room implements Serializable {
+        @Serial private static final long serialVersionUID=1L;
+        transient byte[] lastCheckpoint;
         final String code;
         String name;
         int capacity = 4;
@@ -1524,9 +1827,9 @@ public final class GameServer implements AutoCloseable {
         boolean matchmaking;
         int targetPlayers;
         long countdownDeadline;
-        ScheduledFuture<?> countdownFuture;
+        transient ScheduledFuture<?> countdownFuture;
         long replayDeadline;
-        ScheduledFuture<?> replayFuture;
+        transient ScheduledFuture<?> replayFuture;
         Game game;
 
         Room(String code, String host, int boardSize) {
@@ -1556,7 +1859,18 @@ public final class GameServer implements AutoCloseable {
         }
     }
 
-    private static final class Game {
+    private static final class Game implements Serializable {
+        @Serial private static final long serialVersionUID=1L;
+        String phase="TURN";
+        boolean paused;
+        long remainingTurn, remainingIdle, remainingAction, actionDeadline;
+        String endReason;
+        boolean endAbnormal;
+        long endedAt;
+        final Set<String> resumeVotes=new HashSet<>();
+        transient ScheduledFuture<?> actionFuture;
+        final String id = UUID.randomUUID().toString();
+        final long startedAt = System.currentTimeMillis();
         final List<String> players;
         final Set<String> active;
         final Set<String> forfeited = new HashSet<>();
@@ -1576,8 +1890,8 @@ public final class GameServer implements AutoCloseable {
         long lastValidAction = System.currentTimeMillis();
         boolean resolving;
         boolean finished;
-        ScheduledFuture<?> turnFuture;
-        ScheduledFuture<?> inactivityFuture;
+        transient ScheduledFuture<?> turnFuture;
+        transient ScheduledFuture<?> inactivityFuture;
 
         Game(List<String> roomPlayers, int boardSize, Random random) {
             players = new ArrayList<>(roomPlayers);

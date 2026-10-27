@@ -28,6 +28,15 @@ public final class WhisperHistoryTest {
         WhisperHistory bounded = new WhisperHistory(directory, "localhost", 12345, "Alice");
         if (bounded.messages("bob").size() != 100 || !bounded.messages("bob").get(0).text().equals("Tin 5"))
             throw new AssertionError("History retention");
+        var snapshot = java.util.Map.of("Bob", List.of(new ChatEntry("Alice", "Xin chào <html> 👋", 1),
+                new ChatEntry("Bob", "Trả lời", 3), new ChatEntry("Bob", "Từ máy khác", 4)));
+        history.mergeServer(snapshot); history.mergeServer(snapshot);
+        if (history.messages("Bob").size() != 3) throw new AssertionError("Sync duplicated cached messages");
+        WhisperHistory fresh = new WhisperHistory(Files.createTempDirectory("fresh-chat"), "localhost", 12345, "Alice");
+        fresh.mergeServer(snapshot);
+        if (!fresh.messages("Bob").equals(history.messages("Bob"))) throw new AssertionError("Fresh device sync");
+        // Restore peer casing used by the existing conversation UI checks.
+        history.append("BOB", new ChatEntry("Bob", "More", 5));
         SwingUtilities.invokeAndWait(() -> {
             AtomicReference<String> opened = new AtomicReference<>();
             ConversationsPanel panel = new ConversationsPanel(opened::set);

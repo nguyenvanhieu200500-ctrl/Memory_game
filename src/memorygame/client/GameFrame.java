@@ -108,6 +108,11 @@ public final class GameFrame extends JFrame {
     private JLabel shopSelectionDescription;
     private JButton shopPrimaryButton;
     private CardButton shopCardPreview;
+    private JPanel shopPreviewContent;
+    private JPanel shopTitlePreview;
+    private ShopStyle.TitlePreview shopTitleShowcase;
+    private JLabel shopPreviewCaption;
+    private JLabel shopEquippedSummary;
     private String shopPreviewTheme = "theme_classic";
     private int coins;
     private int currentRating;
@@ -146,6 +151,9 @@ public final class GameFrame extends JFrame {
     private JLabel gameScores;
     private JLabel gamePairs;
     private long deadline;
+    private boolean gamePaused;
+    private String currentMatchId = "";
+    private JButton resumeGameButton;
     private String currentPlayer = "";
     private final javax.swing.Timer countdown;
     private final javax.swing.Timer visualEffectsTimer;
@@ -660,64 +668,91 @@ public final class GameFrame extends JFrame {
     }
 
     private JPanel buildShopPanel() {
-        JPanel page = panel(new BorderLayout(16, 16));
-        page.setBorder(new EmptyBorder(20, 22, 20, 22));
+        JPanel page = panel(new BorderLayout(18, 18));
+        page.setBorder(new EmptyBorder(22, 24, 20, 24));
 
-        JPanel header = panel(new BorderLayout(12, 0));
+        JPanel header = new ShopStyle.Surface(new BorderLayout(20, 0), true);
+        header.setBorder(new EmptyBorder(18, 22, 20, 22));
         JPanel identity = panel(new GridLayout(0, 1, 0, 2));
-        JLabel shopTitle = label("Cửa hàng", 24, Font.BOLD);
-        shopTitle.setForeground(VIOLET_LIGHT);
+        identity.setOpaque(false);
+        JLabel shopTitle = label("Cửa hàng", 27, Font.BOLD);
+        shopTitle.setForeground(AppTheme.PRIMARY);
         identity.add(shopTitle);
-        JLabel subtitle = label("Vật phẩm trang trí — không ảnh hưởng luật chơi", 13, Font.PLAIN);
-        subtitle.setForeground(MUTED);
-        identity.add(subtitle);
         header.add(identity, BorderLayout.WEST);
-        shopBalance = label("◆ 0 xu", 16, Font.BOLD);
+        shopBalance = label("0 xu", 22, Font.BOLD);
+        shopBalance.setHorizontalAlignment(SwingConstants.CENTER);
         shopBalance.setForeground(AppTheme.GOLD_TEXT);
-        shopBalance.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(BORDER), new EmptyBorder(9, 14, 9, 14)));
-        header.add(shopBalance, BorderLayout.EAST);
+        JPanel balanceCard = new ShopStyle.Surface(new BorderLayout(0, 6), false);
+        balanceCard.setBorder(new EmptyBorder(12, 24, 14, 24));
+        JLabel balanceCaption = label("VÍ CỦA BẠN", 10, Font.BOLD);
+        balanceCaption.setForeground(MUTED);
+        balanceCaption.setHorizontalAlignment(SwingConstants.CENTER);
+        balanceCard.add(balanceCaption, BorderLayout.NORTH);
+        balanceCard.add(shopBalance, BorderLayout.CENTER);
+        header.add(balanceCard, BorderLayout.EAST);
         page.add(header, BorderLayout.NORTH);
 
-        JPanel catalog = new RoundedPanel(new BorderLayout(0, 10));
-        catalog.setBorder(new EmptyBorder(14, 14, 14, 14));
-        catalog.add(label("Danh mục vật phẩm", 17, Font.BOLD), BorderLayout.NORTH);
-        shopList.setBackground(PANEL);
+        JPanel catalog = new ShopStyle.Surface(new BorderLayout(0, 12), false);
+        catalog.setBorder(new EmptyBorder(18, 18, 18, 18));
+        JPanel catalogHeader = panel(new BorderLayout(0, 8));
+        catalogHeader.setOpaque(false);
+        catalogHeader.add(label("Bộ sưu tập", 19, Font.BOLD), BorderLayout.NORTH);
+        shopEquippedSummary = label(" ", 12, Font.PLAIN);
+        shopEquippedSummary.setForeground(MUTED);
+        shopEquippedSummary.setOpaque(true);
+        shopEquippedSummary.setBackground(new Color(0xF4F0FB));
+        shopEquippedSummary.setBorder(new EmptyBorder(10, 12, 10, 12));
+        catalogHeader.add(shopEquippedSummary, BorderLayout.CENTER);
+        catalog.add(catalogHeader, BorderLayout.NORTH);
+        shopList.setBackground(Color.WHITE);
         shopList.setForeground(TEXT);
-        shopList.setFixedCellHeight(72);
+        shopList.setFixedCellHeight(82);
         shopList.setSelectionBackground(AppTheme.SELECTED);
         shopList.setCellRenderer(new ShopRenderer());
         shopList.addListSelectionListener(e -> {
             if (!e.getValueIsAdjusting()) refreshShopSelection();
         });
         JScrollPane catalogScroll = new JScrollPane(shopList);
-        catalogScroll.setBorder(BorderFactory.createLineBorder(BORDER));
+        catalogScroll.setBorder(BorderFactory.createEmptyBorder());
+        catalogScroll.getViewport().setBackground(Color.WHITE);
         catalog.add(catalogScroll, BorderLayout.CENTER);
 
-        JPanel detail = new RoundedPanel(new BorderLayout(12, 12));
-        detail.setPreferredSize(new Dimension(360, 10));
-        detail.setBorder(new EmptyBorder(22, 22, 22, 22));
-        JPanel detailText = panel(new GridLayout(0, 1, 0, 10));
+        JPanel detail = new ShopStyle.Surface(new BorderLayout(12, 16), false);
+        detail.setPreferredSize(new Dimension(370, 10));
+        detail.setBorder(new EmptyBorder(22, 22, 24, 22));
+        JPanel detailText = panel(new BorderLayout(0, 12));
         detailText.setOpaque(false);
-        JLabel type = label("VẬT PHẨM ĐANG CHỌN", 12, Font.BOLD);
+        JLabel type = label("KHÁM PHÁ VẬT PHẨM", 10, Font.BOLD);
         type.setForeground(AppTheme.MUTED);
         shopSelectionTitle = label("Chọn một vật phẩm", 20, Font.BOLD);
         shopSelectionDescription = label("Xem mô tả, giá và trạng thái sở hữu tại đây.", 14, Font.PLAIN);
         shopSelectionDescription.setForeground(MUTED);
-        detailText.add(type);
-        detailText.add(shopSelectionTitle);
-        detailText.add(shopSelectionDescription);
+        detailText.add(type, BorderLayout.NORTH);
+        detailText.add(shopSelectionTitle, BorderLayout.CENTER);
+        detailText.add(shopSelectionDescription, BorderLayout.SOUTH);
         detail.add(detailText, BorderLayout.NORTH);
-        JPanel previewArea = new ArenaBoardPanel(new GridBagLayout());
-        previewArea.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(BORDER), new EmptyBorder(16, 16, 16, 16)));
+        JPanel previewArea = new ShopStyle.CardStage();
+        previewArea.setBorder(new EmptyBorder(16, 16, 16, 16));
         shopCardPreview = new CardButton("?");
         shopCardPreview.setFont(new Font("Segoe UI", Font.BOLD, 44));
         shopCardPreview.setPreferredSize(new Dimension(150, 190));
         shopCardPreview.setEnabled(false);
         previewArea.add(shopCardPreview);
-        detail.add(previewArea, BorderLayout.CENTER);
-        shopPrimaryButton = button("Chọn vật phẩm", ACCENT);
+        shopPreviewContent = panel(new CardLayout());
+        shopPreviewContent.add(previewArea, "THEME");
+        shopTitlePreview = panel(new BorderLayout());
+        shopTitlePreview.setOpaque(false);
+        shopPreviewContent.setOpaque(false);
+        shopPreviewContent.add(shopTitlePreview, "TITLE");
+        JPanel preview = panel(new BorderLayout(0, 10));
+        preview.setOpaque(false);
+        shopPreviewCaption = label("XEM TRƯỚC · MẶT SAU THẺ", 10, Font.BOLD);
+        shopPreviewCaption.setForeground(MUTED);
+        preview.add(shopPreviewCaption, BorderLayout.NORTH);
+        preview.add(shopPreviewContent, BorderLayout.CENTER);
+        detail.add(preview, BorderLayout.CENTER);
+        shopPrimaryButton = new ShopStyle.ActionButton("Chọn vật phẩm", true);
+        shopPrimaryButton.addActionListener(e -> AUDIO.playClick());
         shopPrimaryButton.setEnabled(false);
         shopPrimaryButton.addActionListener(e -> {
             ShopItem selected = shopList.getSelectedValue();
@@ -732,7 +767,7 @@ public final class GameFrame extends JFrame {
         content.add(detail, BorderLayout.EAST);
         page.add(content, BorderLayout.CENTER);
 
-        JButton back = button("Quay lại Lobby", AppTheme.MUTED);
+        JButton back = new ShopStyle.ActionButton("Về sảnh chờ", false);
         back.addActionListener(e -> pages.show(root, "lobby"));
         JPanel footer = panel(new FlowLayout(FlowLayout.LEFT, 0, 0));
         back.setPreferredSize(new Dimension(160, 42));
@@ -753,6 +788,10 @@ public final class GameFrame extends JFrame {
         gameTimer.setHorizontalAlignment(SwingConstants.RIGHT);
         header.add(gameTurn, BorderLayout.WEST);
         header.add(gameTimer, BorderLayout.EAST);
+        resumeGameButton = new JButton("Xác nhận tiếp tục");
+        resumeGameButton.setVisible(false);
+        resumeGameButton.addActionListener(e -> send(Message.of(Protocol.Type.GAME_RESUME).with("matchId", currentMatchId)));
+        header.add(resumeGameButton, BorderLayout.CENTER);
         turnProgress = new JProgressBar(0, 150);
         turnProgress.setUI(new javax.swing.plaf.basic.BasicProgressBarUI());
         turnProgress.setValue(150);
@@ -1003,6 +1042,15 @@ public final class GameFrame extends JFrame {
                 if (message.get("friends") != null) { friends.clear(); friends.addAll(message.<List<String>>value("friends")); roomInvites.updateFriends(friends); lobbyList.repaint(); }
                 if (!message.string("notice").isBlank()) setBanner(lobbyNotice, message.string("notice"), INFO_BG, ACCENT);
             }
+            case WHISPER_HISTORY -> {
+                Map<String, List<memorygame.common.Protocol.ChatEntry>> history = message.value("conversations");
+                if (history != null) {
+                    try { whisperHistory.mergeServer(history); }
+                    catch (java.io.IOException e) { setBanner(lobbyNotice, "Đã tải tin nhắn nhưng không lưu được bản sao trên máy này.", WARNING_BG, MUTED); }
+                    whispers.forEach((peer, panel) -> panel.setMessages(whisperHistory.messages(peer)));
+                    refreshConversations();
+                }
+            }
             case WHISPER_MESSAGE -> {
                 String peer = message.string("from").equalsIgnoreCase(username) ? message.string("to") : message.string("from");
                 memorygame.common.Protocol.ChatEntry entry = message.value("entry");
@@ -1019,6 +1067,7 @@ public final class GameFrame extends JFrame {
                 }
             }
             case GAME_START -> startGame(message);
+            case GAME_PAUSED -> updateRecovery(message);
             case CHAT_MESSAGE -> {
                 if (roomCode.equals(message.string("code"))) chatPanel.append(message.value("entry"));
             }
@@ -1104,7 +1153,7 @@ public final class GameFrame extends JFrame {
     private void updateWalletLabels() {
         String text = "◆ " + coins + " xu";
         if (walletLabel != null) walletLabel.setText(text);
-        if (shopBalance != null) shopBalance.setText(text);
+        if (shopBalance != null) shopBalance.setText(coins + " xu");
         if (roomWallet != null) roomWallet.setText(text);
     }
 
@@ -1132,6 +1181,14 @@ public final class GameFrame extends JFrame {
                         Boolean.TRUE.equals(row.get("equipped"))));
             }
         }
+        String themeName = "Cổ điển", equippedTitleName = "Chưa chọn";
+        for (int i = 0; i < shopModel.size(); i++) {
+            ShopItem item = shopModel.get(i);
+            if (item.equipped && item.type.equals("THEME")) themeName = item.name;
+            if (item.equipped && item.type.equals("TITLE")) equippedTitleName = item.name;
+        }
+        shopEquippedSummary.setText("<html><b>ĐANG SỬ DỤNG</b><br><br>Mặt sau thẻ: " + shopHtml(themeName)
+                + "<br>Danh hiệu: " + shopHtml(equippedTitleName) + "</html>");
         int selectedIndex = 0;
         for (int i = 0; i < shopModel.size(); i++) {
             if (shopModel.get(i).id.equals(previousId)) {
@@ -1152,15 +1209,21 @@ public final class GameFrame extends JFrame {
             shopSelectionDescription.setText("Xem mô tả, giá và trạng thái sở hữu tại đây.");
             shopPrimaryButton.setText("Chọn vật phẩm");
             shopPrimaryButton.setEnabled(false);
-            shopPreviewTheme = "theme_classic";
+            shopPreviewContent.setVisible(false);
+            shopPreviewCaption.setText("Chọn vật phẩm để xem trước");
             return;
         }
-        shopSelectionTitle.setText(selected.name);
-        shopSelectionDescription.setText("<html><div style='width:290px'>" + selected.description
-                + "<br><br><b>Loại:</b> " + (selected.type.equals("THEME") ? "Mặt sau thẻ" : "Danh hiệu")
-                + "<br><b>Giá:</b> " + (selected.price == 0 ? "Miễn phí" : selected.price + " xu")
+        shopPreviewContent.setVisible(true);
+        shopSelectionTitle.setText("<html><div style='width:240px'>" + shopHtml(selected.name) + "</div></html>");
+        shopSelectionDescription.setText("<html><div style='width:240px'>" + (selected.type.equals("TITLE")
+                    ? "Danh hiệu hiển thị cùng tên bạn ở sảnh và phòng chơi."
+                    : shopHtml(selected.description))
+                + "<br><br><b>" + (selected.price == 0 ? "Miễn phí" : selected.price + " xu")
+                + "</b> · " + (selected.type.equals("THEME") ? "Mặt sau thẻ" : "Danh hiệu")
                 + "</div></html>");
+        ((CardLayout) shopPreviewContent.getLayout()).show(shopPreviewContent, selected.type.equals("THEME") ? "THEME" : "TITLE");
         if (selected.type.equals("THEME")) {
+            shopPreviewCaption.setText("XEM TRƯỚC · MẶT SAU THẺ");
             shopPreviewTheme = selected.id;
             try {
                 shopCardPreview.setBackground(Color.decode(selected.color));
@@ -1171,23 +1234,27 @@ public final class GameFrame extends JFrame {
             shopCardPreview.setForeground(Color.WHITE);
             shopCardPreview.setThemeEffect(shopPreviewTheme, visualEffectPhase);
         } else {
-            shopPreviewTheme = selected.id;
-            boolean champion = "title_champion".equals(selected.id);
-            shopCardPreview.setBackground(champion ? new Color(92, 55, 8) : new Color(12, 62, 82));
-            shopCardPreview.setForeground(champion ? new Color(254, 240, 138) : new Color(165, 243, 252));
-            shopCardPreview.setText(champion ? "★" : "◆");
-            shopCardPreview.setThemeEffect(shopPreviewTheme, visualEffectPhase);
+            shopPreviewCaption.setText("XEM TRƯỚC · DANH HIỆU CỦA BẠN");
+            shopTitlePreview.removeAll();
+            shopTitleShowcase = new ShopStyle.TitlePreview(username, selected.name, selected.id.equals("title_champion"));
+            shopTitlePreview.add(shopTitleShowcase, BorderLayout.CENTER);
+            shopTitlePreview.revalidate();
+            shopTitlePreview.repaint();
         }
         if (selected.equipped) {
-            shopPrimaryButton.setText("Đang trang bị");
+            shopPrimaryButton.setText(selected.type.equals("THEME") ? "Đang dùng mặt thẻ này" : "Đang dùng danh hiệu này");
             shopPrimaryButton.setEnabled(false);
         } else if (selected.owned) {
-            shopPrimaryButton.setText("Trang bị");
+            shopPrimaryButton.setText(selected.type.equals("THEME") ? "Dùng mặt sau thẻ này" : "Dùng danh hiệu này");
             shopPrimaryButton.setEnabled(true);
         } else {
-            shopPrimaryButton.setText("Mua • " + selected.price + " xu");
+            shopPrimaryButton.setText(coins >= selected.price ? "Mua với " + selected.price + " xu" : "Cần thêm " + (selected.price - coins) + " xu");
             shopPrimaryButton.setEnabled(coins >= selected.price);
         }
+    }
+
+    private static String shopHtml(String text) {
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
     private void applyEquippedTheme() {
@@ -1208,8 +1275,10 @@ public final class GameFrame extends JFrame {
 
     private void updateCardThemeEffects() {
         boolean animateBoard = !"theme_classic".equals(equippedTheme) && cards.length > 0;
-        boolean animatePreview = shopCardPreview != null;
-        if (!animateBoard && !animatePreview) return;
+        boolean animatePreview = shopCardPreview != null && shopCardPreview.isShowing();
+        boolean animateTitle = shopTitleShowcase != null && shopTitleShowcase.isShowing();
+        if (!animateBoard && !animatePreview && !animateTitle) return;
+        if (animateTitle) shopTitleShowcase.setPhase((System.nanoTime() / 1_000_000L % 8000) / 8000.0);
         visualEffectPhase = (visualEffectPhase + 0.025) % 1.0;
         if (animateBoard) {
             for (JButton button : cards) {
@@ -1560,7 +1629,7 @@ public final class GameFrame extends JFrame {
             card.setFont(new Font("Segoe UI", Font.BOLD, fontSize));
             card.setToolTipText("Hàng " + (index / size + 1) + ", cột " + (index % size + 1));
             card.addActionListener(e -> {
-                if (cardStates[index] == 0 && username.equals(currentPlayer)) {
+                if (!gamePaused && cardStates[index] == 0 && username.equals(currentPlayer)) {
                     AUDIO.playFlip();
                     card.setEnabled(false);
                     send(Message.of(Protocol.Type.CARD_PICK).with("index", index));
@@ -1574,6 +1643,8 @@ public final class GameFrame extends JFrame {
     }
 
     private void startGame(Message message) {
+        currentMatchId = message.string("matchId");
+        gamePaused = message.bool("paused");
         applyRoomTheme(message);
         roomCode = message.string("code");
         chatPanel.setMessages(message.value("chat"));
@@ -1619,6 +1690,26 @@ public final class GameFrame extends JFrame {
         updateScores(message.value("scores"));
         updateCardEnabled();
         pages.show(root, "game");
+        updateRecovery(message);
+    }
+
+    private void updateRecovery(Message message) {
+        if (!currentMatchId.equals(message.string("matchId"))) return;
+        gamePaused = message.bool("paused");
+        List<String> confirmed = message.value("confirmed");
+        List<String> required = message.value("required");
+        boolean voted = confirmed != null && confirmed.contains(username);
+        resumeGameButton.setVisible(gamePaused);
+        resumeGameButton.setEnabled(!voted);
+        resumeGameButton.setText(voted ? "Đã xác nhận · Chờ người chơi" : "Xác nhận tiếp tục");
+        chatPanel.setSendingEnabled(!gamePaused);
+        if (gamePaused) {
+            deadline = 0;
+            gameTurn.setText("Ván đang tạm dừng");
+            gameTimer.setText("Xác nhận " + (confirmed == null ? 0 : confirmed.size()) + "/" + (required == null ? 0 : required.size()));
+            turnProgress.setValue(0);
+        }
+        updateCardEnabled();
     }
 
     private void revealCard(int index, int value) {
@@ -1725,7 +1816,7 @@ public final class GameFrame extends JFrame {
     private void updateTurn(Message message) {
         currentPlayer = message.string("current");
         deadline = message.longValue("deadline");
-        gameTurn.setText(username.equals(currentPlayer) ? "Lượt của bạn" : "Lượt: " + currentPlayer);
+        gameTurn.setText(gamePaused ? "Ván đang tạm dừng" : username.equals(currentPlayer) ? "Lượt của bạn" : "Lượt: " + currentPlayer);
         gameTurn.setForeground(playerColors.getOrDefault(currentPlayer, TEXT));
         updateCardEnabled();
     }
@@ -1753,7 +1844,7 @@ public final class GameFrame extends JFrame {
     }
 
     private void updateCardEnabled() {
-        boolean myTurn = username.equals(currentPlayer);
+        boolean myTurn = !gamePaused && username.equals(currentPlayer);
         for (int i = 0; i < cards.length; i++) cards[i].setEnabled(myTurn && cardStates[i] == 0);
     }
 
@@ -2974,28 +3065,13 @@ public final class GameFrame extends JFrame {
     private final class ShopRenderer extends DefaultListCellRenderer {
         @Override public Component getListCellRendererComponent(JList<?> list, Object value, int index,
                                                                  boolean selected, boolean focused) {
-            JLabel label = (JLabel) super.getListCellRendererComponent(list, value, index, selected, focused);
-            label.setBorder(new EmptyBorder(10, 14, 10, 14));
-            label.setFont(new Font("Segoe UI", Font.PLAIN, 14));
-            if (!selected) label.setBackground(index % 2 == 0 ? PANEL : AppTheme.INSET);
             if (value instanceof ShopItem item) {
-                Color swatch = decodeColor(item.color);
-                double pulse = 0.5 + 0.5 * Math.sin((visualEffectPhase + index * 0.11) * Math.PI * 2);
-                Color animatedSwatch = mixColor(swatch, Color.WHITE, 0.08 + pulse * 0.25);
-                String marker = item.type.equals("TITLE") ? "★" : "◆";
-                label.setText("<html><font color='" + toHex(animatedSwatch) + "'>" + marker
-                        + "</font>&nbsp;&nbsp;<b>"
-                        + item.name + "</b><br>&nbsp;&nbsp;&nbsp;&nbsp;"
-                        + (item.equipped ? "Đang trang bị" : item.owned ? "Đã sở hữu"
-                        : item.price + " xu") + "</html>");
-                label.setForeground(item.equipped ? AppTheme.PRIMARY : TEXT);
-                if (item.equipped) {
-                    label.setBorder(BorderFactory.createCompoundBorder(
-                            BorderFactory.createMatteBorder(0, 3, 0, 0, animatedSwatch),
-                            new EmptyBorder(10, 11, 10, 14)));
-                }
+                boolean title = item.type.equals("TITLE");
+                String status = item.equipped ? "Đang dùng" : item.owned ? "Đã sở hữu" : item.price == 0 ? "Miễn phí" : item.price + " xu";
+                return new ShopStyle.ItemView(item.name, title ? "Danh hiệu người chơi" : "Mặt sau thẻ khi úp",
+                        status, decodeColor(item.color), title, selected, item.equipped, focused);
             }
-            return label;
+            return super.getListCellRendererComponent(list, value, index, selected, focused);
         }
     }
 

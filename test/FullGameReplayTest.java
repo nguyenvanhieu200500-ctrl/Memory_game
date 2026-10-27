@@ -141,6 +141,34 @@ public final class FullGameReplayTest {
             if (replayPlayers.stream().anyMatch(row -> Boolean.TRUE.equals(row.get("ready")))) {
                 throw new AssertionError("Trạng thái sẵn sàng chưa được xóa khi chơi lại");
             }
+            one.send(Message.of(Type.ROOM_READY).with("ready", true));
+            two.send(Message.of(Type.ROOM_READY).with("ready", true));
+            one.await(Type.ROOM_UPDATE, FullGameReplayTest::everyoneReady);
+            one.send(Message.of(Type.ROOM_START));
+            Message secondStart=one.await(Type.GAME_START);
+            if(start.string("matchId").isBlank() || start.string("matchId").equals(secondStart.string("matchId")))
+                throw new AssertionError("Replay reused match ID");
+            two.send(Message.of(Type.ROOM_LEAVE));
+            Message secondEnd=one.await(Type.GAME_END);
+            List<Map<String,Object>> replayResults=secondEnd.value("results");
+            Map<String,Object> forfeited=replayResults.stream().filter(row->nameTwo.equals(row.get("username"))).findFirst().orElseThrow();
+            if(!Boolean.TRUE.equals(forfeited.get("forfeited")) || (Integer)forfeited.get("coinReward")!=10)
+                throw new AssertionError("Replay forfeit reward");
+            one.send(Message.of(Type.HISTORY_REQUEST));
+            List<String> replayHistory=one.await(Type.HISTORY_UPDATE).value("history");
+            if(replayHistory.size()!=2) throw new AssertionError("Replay history not separate");
+            if(args.length>1 && args[1].equals("database")) {
+                one.send(Message.of(Type.SHOP_REQUEST));
+                List<Map<String,Object>> catalog=one.await(Type.SHOP_UPDATE).value("products");
+                Map<String,Object> ocean=catalog.stream().filter(row->"theme_ocean".equals(row.get("id"))).findFirst().orElseThrow();
+                if(!"Giá từ database".equals(ocean.get("name")) || (Integer)ocean.get("price")!=1)
+                    throw new AssertionError("Shop did not read DB");
+                one.send(Message.of(Type.SHOP_BUY).with("productId","theme_ocean"));
+                one.await(Type.WALLET_UPDATE);
+                List<Map<String,Object>> owned=one.await(Type.SHOP_UPDATE).value("products");
+                if(owned.stream().noneMatch(row->"theme_ocean".equals(row.get("id")) && Boolean.TRUE.equals(row.get("owned"))))
+                    throw new AssertionError("Bought item missing");
+            }
             System.out.println("FULL_GAME_REPLAY_OK room=" + roomCode
                     + " pairs=8 scoreTotal=8 coinRewards=50/10 shopCatalog=" + products.size());
         }

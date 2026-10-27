@@ -18,6 +18,7 @@
 - Lượt 15 giây; đúng được +1 và chơi tiếp, sai hiện 2 giây rồi chuyển lượt.
 - Hết lượt tự động, phát hiện 60 giây không hoạt động, bỏ cuộc và giữ chỗ mất kết nối 30 giây.
 - Client tự kết nối lại tối đa 10 lần khi mạng chập chờn và khôi phục đúng phòng/trận trong thời hạn giữ chỗ.
+- Khi server MySQL khởi động lại, ván đang chơi được khôi phục và tạm dừng; mọi người còn tham gia bấm **Xác nhận tiếp tục** để chơi tiếp với bàn, điểm, lượt và thời gian còn lại đã lưu.
 - Sau trận, người chơi có 30 giây chọn Chơi lại; chỉ những người đồng ý mới được giữ trong phòng mới.
 - Khi hết trận, hệ thống hiển thị bước tính điểm ngắn rồi xếp kết quả theo số cặp giảm dần; người bằng điểm nhận cùng hạng (`1, 2, 2, 3`).
 - Tài khoản, xu, thắng/thua, điểm xếp hạng, vật phẩm và lịch sử được lưu trong MySQL chạy bằng Docker.
@@ -86,13 +87,22 @@ Chạy `open-database-admin.bat`, sau đó đăng nhập Adminer tại `http://l
 Các đối tượng chính:
 
 - `users`: tài khoản, xếp hạng, thắng, thua, tổng trận, xu và vật phẩm đang trang bị.
-- `user_items`: các vật phẩm từng tài khoản đã mua.
-- `match_history`: tối đa 50 kết quả gần nhất của mỗi người chơi.
+- `products`: danh mục vật phẩm của cửa hàng, giá và trạng thái bán.
+- `user_items`: các vật phẩm từng tài khoản đã mua, liên kết tới `users` và `products`.
+- `matches`: thông tin từng trận, mã mới cho mỗi lần chơi lại.
+- `match_snapshots`: trạng thái bí mật của ván đang chơi, chỉ đọc tại server để phục hồi.
+- `match_results`: kết quả từng người trong trận, liên kết tới `matches` và `users`.
+- `match_history`: giữ dữ liệu lịch sử cũ; lịch sử mới đọc từ `matches` và `match_results`.
 - `leaderboard`: view có sẵn cho xếp hạng và tỷ lệ thắng.
+- `private_messages`: tin nhắn riêng gồm người gửi, người nhận, nội dung và thời gian; server tự tạo bảng khi khởi động.
+
+Tin nhắn riêng mới được lưu trên server trước khi chuyển tới người nhận. Sau khi đăng nhập, client tự đồng bộ tối đa 100 tin gần nhất mỗi cuộc trò chuyện (không đánh dấu tin lịch sử là tin chưa đọc). MySQL giữ các bản ghi tin nhắn; giới hạn 100 áp dụng cho phần lịch sử tải về. Cần cập nhật và khởi động lại cả server lẫn client. Lịch sử cũ chỉ có trong file trên máy client vẫn được giữ tại máy đó, không tự tải lên server. Chat trong trận vẫn lưu tạm trong bộ nhớ phòng. Chế độ `MEMORY_GAME_STORAGE=file` lưu tin riêng trong `data/private-messages.bin`.
 
 Dữ liệu MySQL nằm trong Docker volume `memory-game-mysql-data` và vẫn còn sau khi container dừng.
 Ở lần chạy MySQL đầu tiên, Server tự nhập dữ liệu cũ từ `data/state.bin` nếu database chưa có tài khoản.
 MySQL của game dùng cổng `3307` trên máy chủ để tránh xung đột với dịch vụ đang dùng cổng `3306`.
+
+Chi tiết nâng cấp, transaction và kiểm thử database: [docs/database.md](docs/database.md).
 
 ## Kiểm thử
 
@@ -131,7 +141,7 @@ Người được mời nhận bảng nhỏ hiển thị người mời, tên/m�
 - Bấm vào một người chơi khác để mở hai mục **Kết bạn** và **Thì thầm**.
 - Nút **+** bên phải mỗi dòng gửi lời mời vào phòng khi cả hai người đang rảnh.
 - Kết bạn cần người nhận chấp nhận; lời mời hết hạn sau 2 phút. Danh sách bạn bè được lưu trong `friends.properties` cạnh `state.bin` trên máy chủ (cả chế độ MySQL và tệp).
-- Thì thầm chỉ gửi đến người nhận và người gửi, tối đa 300 ký tự; lịch sử giữ tối đa 100 tin gần nhất mỗi cuộc trò chuyện trong `.memory-game-online/chats` tại thư mục người dùng trên máy client, tách riêng theo máy chủ và tài khoản. Bấm biểu tượng trò chuyện ở góc danh sách người online để xem những người đã nhắn tin và mở lại cuộc trò chuyện. Lịch sử lưu trên máy này, không đồng bộ sang máy khác.
+- Thì thầm chỉ gửi đến người nhận và người gửi, tối đa 300 ký tự; lịch sử giữ tối đa 100 tin gần nhất mỗi cuộc trò chuyện trong `.memory-game-online/chats` tại thư mục người dùng trên máy client, tách riêng theo máy chủ và tài khoản. Bấm biểu tượng trò chuyện ở góc danh sách người online để xem những người đã nhắn tin và mở lại cuộc trò chuyện. Tin nhắn mới được lưu trên server và đồng bộ khi đăng nhập trên máy khác; lịch sử cũ chỉ có trên client vẫn giữ tại máy đó.
 - Biên dịch và khởi động lại cả server lẫn client để sử dụng các thông điệp kết bạn/thì thầm mới.
 
 Bấm **+ ở sảnh** để mở **Thiết lập trận đấu**, chọn tên phòng, số người, chủ đề và độ khó, rồi bấm **Tạo phòng và gửi lời mời**. Server tạo phòng trước và gửi mã phòng thật; nếu người nhận đã bận hoặc offline thì không tạo phòng. Nút **+ trong phòng chờ** vẫn mời ngay vào phòng hiện tại. Cần cập nhật và khởi động lại cả server lẫn client cho luồng này.
