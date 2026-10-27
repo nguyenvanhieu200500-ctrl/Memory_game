@@ -1,6 +1,6 @@
 # Lưu trữ cửa hàng và trận đấu
 
-Server mặc định dùng MySQL. Khi khởi động, `DatabaseStore` chạy nâng cấp cộng thêm qua `GameSchema`; không cần xoá volume Docker hay tạo lại database. `docker/mysql/init.sql` cung cấp cùng cấu trúc cho cài đặt mới.
+Server mặc định dùng MySQL. Chạy `MigrateMain` riêng để nâng cấp cộng thêm qua `GameSchema`; server thông thường không chạy DDL. Không cần xoá volume Docker hay tạo lại database. `docker/mysql/init.sql` cung cấp cùng cấu trúc cho cài đặt mới.
 
 ## Quan hệ
 
@@ -54,8 +54,12 @@ Snapshot thiếu, hỏng hoặc không hợp lệ khiến ván chuyển `INTERRU
 ## Áp dụng
 
 1. Kết thúc các trận hiện tại và dừng server cũ.
-2. Chạy `sh compile.sh`, khởi động lại server bằng script của dự án.
-3. Làm mới Schemas để thấy thêm `friendships`, `direct_messages`, `coin_transactions`, `match_snapshots`. Startup tự chạy migration; SQL tương đương cho database đã có `users`/`matches` nằm tại `docker/mysql/migrations/20261027-persistence.sql`. Chạy lại an toàn. Phần nhập tệp được thực hiện bởi server sau khi nhập tài khoản.
+2. Cấu hình `MYSQL_ROOT_PASSWORD` và `MEMORY_GAME_DB_PASSWORD` trước khi chạy Docker Compose. Đây là mật khẩu do bạn chọn cho cài đặt mới; với volume cũ, dùng mật khẩu đang có (đổi biến môi trường không đổi mật khẩu trong MySQL). Java đọc biến môi trường của tiến trình, không tự đọc `.env` của Compose.
+3. Đặt `MEMORY_GAME_DB_URL` (mặc định database `memory_game` tại `localhost:3307`), `MEMORY_GAME_DB_USER` và `MEMORY_GAME_DB_PASSWORD` cho tài khoản migration. Chạy `sh migrate-database.sh` trên macOS/Linux hoặc `migrate-database.bat` trên Windows. JDBC driver phải có trong `lib/`; `setup-database.bat` tải driver trên Windows.
+4. Chuyển biến môi trường sang tài khoản chạy game có quyền `SELECT, INSERT, UPDATE, DELETE` trên database; bỏ `MEMORY_GAME_DB_MIGRATE` hoặc đặt `false`, rồi khởi động server. Tài khoản migration cần quyền tạo/sửa bảng, chỉ mục, view và dữ liệu. Tài khoản `memory_game` do image MySQL tạo mặc định có toàn quyền trên database; muốn tách quyền, quản trị viên cần cấp một tài khoản runtime riêng. `MEMORY_GAME_DB_MIGRATE=true` chỉ dùng khi chủ động muốn chạy migration lúc khởi động.
+5. Làm mới Schemas để thấy thêm `friendships`, `direct_messages`, `coin_transactions`, `match_snapshots`. SQL nâng cấp tương đương nằm tại `docker/mysql/migrations/20261027-persistence.sql` và `20261027-passwords.sql` (chạy theo thứ tự này). Chạy lại an toàn. Phần nhập tệp được thực hiện bởi server sau khi nhập tài khoản.
+
+Mật khẩu tài khoản game mới dùng PBKDF2-HMAC-SHA256, 600.000 vòng, salt ngẫu nhiên riêng. Hash SHA-256 cũ được giữ tới lần đăng nhập đúng mật khẩu, rồi nâng cấp và lưu thành công trước khi xác nhận đăng nhập. Cột `password_hash` được mở rộng lên `VARCHAR(255)` để chứa định dạng mới.
 
 Không chạy đồng thời server cũ với server mới trên cùng database: server cũ vẫn viết lại bảng lịch sử cũ. Nâng cấp đã được kiểm tra trên database tạm riêng; dữ liệu đang dùng không bị chỉnh trực tiếp trong quá trình kiểm thử.
 
@@ -68,6 +72,8 @@ javac -encoding UTF-8 -cp out -d out test/ProfileTest.java test/HistoryPanelTest
 ```
 
 Khi Docker MySQL dự án đang chạy:
+
+Đặt `MEMORY_GAME_TEST_DB_PASSWORD` bằng mật khẩu root của MySQL kiểm thử tại `127.0.0.1:3307`. Harness tạo và xóa schema ngẫu nhiên riêng cho mỗi ca. Chạy `sh run-database-tests.sh` cho các ca database chính; có thể truyền tên class đầy đủ để chọn ca. Benchmark lớn chạy riêng bằng `sh run-database-tests.sh memorygame.server.DatabasePerformanceTest`.
 
 ```sh
 java -Djava.awt.headless=true -cp 'out:lib/mysql-connector-j-26.7.0.jar' memorygame.test.DatabaseFlowsTest
@@ -131,4 +137,14 @@ java -Djava.awt.headless=true -cp 'out:lib/*' memorygame.test.DatabaseFlowsTest 
 java -Djava.awt.headless=true -cp 'out:lib/*' memorygame.test.DatabaseFlowsTest memorygame.test.RecoveryWaitTest
 ```
 
-Giới hạn: client mới được mô phỏng bằng socket độc lập trên cùng máy, chưa thử hai máy vật lý. Chưa thử mất điện máy chủ/MySQL hay phân vùng mạng đúng lúc ACK commit bị mất; đã thử kill tiến trình game và lỗi SQL bằng trigger. Chưa kiểm tra thủ công cửa sổ Swing trên desktop. Chế độ file vẫn dành cho kiểm thử, không hỗ trợ phục hồi trận. Không bổ sung chức năng sao lưu database.
+## Kiểm chứng bổ sung ngày 27/10/2026
+
+- `PasswordHashesTest`, `PasswordMigrationTest`: đạt kiểm tra salt ngẫu nhiên, Unicode, hash lỗi, mật khẩu cũ, lỗi lưu khi nâng cấp, giữ số dư, đổi mật khẩu và đăng nhập sau restart.
+- `RuntimePrivilegesTest`: đạt chạy luồng hồ sơ bằng tài khoản chỉ có SELECT/INSERT/UPDATE/DELETE; ALTER TABLE bị từ chối. Tài khoản kiểm thử được xóa sau khi chạy.
+- `SchemaParityTest`: đạt so sánh cột, chỉ mục, khóa ngoại, CHECK giữa SQL cài mới và migration Java, chạy lại migration SQL ba lần.
+- `CommitDisconnectTest`: đạt khi proxy TCP cắt năm gói phản hồi COMMIT; kiểm tra mua hàng, bắt đầu trận, snapshot, kết quả và đối chiếu lại trận khi kết nối mới cũng lỗi. Không ghi nợ/thưởng trùng.
+- `CrashPhasesTest`: đạt kill cưỡng bức JVM ở thẻ đầu, cặp sai, chuyển lượt và SETTLING; phục hồi bàn, điểm, người chơi, thời gian và thưởng đúng một lần.
+- `DatabasePerformanceTest`: Java 17.0.18, MySQL 8.4.11, macOS arm64; dữ liệu tạm gồm 10.000 tài khoản, 200.000 tin nhắn, 50.000 trận và 100.000 kết quả. Với 15 mẫu, chat đạt median/p95 2,636/3,824 ms; lịch sử 3,008/3,507 ms. Đây là benchmark cục bộ, không phải cam kết tải đồng thời.
+- `TestSuite` chế độ file đã chạy đến cuối: còn lỗi `ShopEffectsTest` (hiệu ứng không đổi pixel) và `StreamingMusicTest` (thời lượng WAV không khớp 3.638 giây). Các ca còn lại đạt. Hai lỗi giao diện/tài nguyên này chưa được sửa trong phạm vi MySQL.
+
+Giới hạn: client mới được mô phỏng bằng socket độc lập trên cùng máy, chưa thử hai máy vật lý. Đã thử mất phản hồi COMMIT bằng proxy, kill tiến trình game và lỗi SQL bằng trigger; chưa thử mất điện máy chủ/MySQL. Chưa kiểm tra thủ công cửa sổ Swing trên desktop. Chế độ file vẫn dành cho kiểm thử, không hỗ trợ phục hồi trận. Không bổ sung chức năng sao lưu database.

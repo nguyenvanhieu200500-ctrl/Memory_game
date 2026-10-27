@@ -4,10 +4,10 @@ services:
     container_name: memory-game-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: memory_game_root_123
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: memory_game
       MYSQL_USER: memory_game
-      MYSQL_PASSWORD: memory_game_123
+      MYSQL_PASSWORD: ${MEMORY_GAME_DB_PASSWORD:?Set MEMORY_GAME_DB_PASSWORD}
     ports:
       - "3307:3306"
     command:
@@ -17,7 +17,7 @@ services:
       - memory_game_mysql_data:/var/lib/mysql
       - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pmemory_game_root_123"]
+      test: ["CMD-SHELL", 'MYSQL_PWD="$$MYSQL_ROOT_PASSWORD" mysqladmin ping -h localhost -u root']
       interval: 5s
       timeout: 4s
       retries: 20

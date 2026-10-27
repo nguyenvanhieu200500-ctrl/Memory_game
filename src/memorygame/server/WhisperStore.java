@@ -64,11 +64,14 @@ final class WhisperStore {
         List<ChatEntry> entries=new ArrayList<>();long oldest=before,newest=0;boolean more=false;
         if(database!=null) {
             try(Connection c=database.open();PreparedStatement p=c.prepareStatement("""
-                SELECT id,sender,message_text,sent_at FROM direct_messages
-                WHERE ((sender=? AND recipient=?) OR (sender=? AND recipient=?)) AND id<?
+                (SELECT id,sender,message_text,sent_at FROM direct_messages FORCE INDEX (idx_dm_conversation)
+                 WHERE sender=? AND recipient=? AND id<? ORDER BY id DESC LIMIT 51)
+                UNION ALL
+                (SELECT id,sender,message_text,sent_at FROM direct_messages FORCE INDEX (idx_dm_conversation)
+                 WHERE sender=? AND recipient=? AND id<? ORDER BY id DESC LIMIT 51)
                 ORDER BY id DESC LIMIT 51
                 """)) {
-                p.setString(1,account);p.setString(2,peer);p.setString(3,peer);p.setString(4,account);p.setLong(5,before);
+                p.setString(1,account);p.setString(2,peer);p.setLong(3,before);p.setString(4,peer);p.setString(5,account);p.setLong(6,before);
                 try(ResultSet r=p.executeQuery()) {
                     while(r.next()) {
                         if(entries.size()==50){more=true;break;}

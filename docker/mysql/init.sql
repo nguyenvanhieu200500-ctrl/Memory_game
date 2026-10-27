@@ -4,7 +4,7 @@ USE memory_game;
 
 CREATE TABLE IF NOT EXISTS users (
     username VARCHAR(16) PRIMARY KEY,
-    password_hash CHAR(64) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
     rating INT NOT NULL DEFAULT 0,
     wins INT NOT NULL DEFAULT 0,
     losses INT NOT NULL DEFAULT 0,
@@ -196,3 +196,5 @@ CREATE TABLE IF NOT EXISTS coin_transactions (
             CHECK (reason IN ('PURCHASE','MATCH_REWARD')),
             INDEX idx_coin_user_time (username,created_at,operation_id)
         ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE INDEX idx_results_history ON match_results(username, recorded_at DESC, legacy_order ASC, match_id DESC);

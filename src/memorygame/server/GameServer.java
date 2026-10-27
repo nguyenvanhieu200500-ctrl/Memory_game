@@ -123,7 +123,7 @@ public final class GameServer implements AutoCloseable {
             try {
                 if (mysqlStorage) for (Room room : rooms.values()) {
                     Game game=room.game;
-                    if (game != null) {
+                    if (game != null && !room.pendingStart) {
                         byte[] payload=encodeSnapshot(room);
                         // Completed matches cannot be rewritten as snapshots after an uncertain commit.
                         if(databaseStore.playingSnapshots().stream().anyMatch(stored->stored.id().equals(game.id)))
@@ -253,16 +253,22 @@ public final class GameServer implements AutoCloseable {
             return;
         }
         UserRecord user = users.get(key);
-        String passwordHash = hash(password);
+
         if (user == null) {
             client.error("Tài khoản không tồn tại. Hãy đăng ký trước.");
             return;
         }
-        if (!user.passwordHash.equals(passwordHash)) {
+        if (!PasswordHashes.verify(password,user.passwordHash)) {
             client.error("Sai mật khẩu.");
             return;
         }
 
+        if(PasswordHashes.legacy(user.passwordHash)) {
+            String previous=user.passwordHash, upgraded=PasswordHashes.hash(password);
+            if(mysqlStorage)databaseStore.updatePassword(user.username,previous,upgraded);
+            user.passwordHash=upgraded;
+            if(!mysqlStorage)try{persistState();}catch(Exception e){user.passwordHash=previous;throw new IllegalStateException("Không nâng cấp được mật khẩu",e);}
+        }
         client.username = user.username;
         online.put(key, client);
         ScheduledFuture<?> task = disconnectTasks.remove(key);
@@ -316,7 +322,7 @@ public final class GameServer implements AutoCloseable {
             client.error("Tên tài khoản đã tồn tại.");
             return;
         }
-        UserRecord created=new UserRecord(username, hash(password));
+        UserRecord created=new UserRecord(username, PasswordHashes.hash(password));
         if (mysqlStorage) databaseStore.saveUsers(Map.of(userKey,created));
         users.put(userKey, created);
         if (!mysqlStorage) {
@@ -748,6 +754,7 @@ public final class GameServer implements AutoCloseable {
         if(game.actionFuture!=null)game.actionFuture.cancel(false);
     }
     private boolean checkpoint(Room room) {
+        if(room.pendingStart)return false;
         if(!mysqlStorage)return true;
         try {
             byte[] payload=encodeSnapshot(room);room.lastRevision=databaseStore.saveSnapshot(room.game.id,payload,room.lastRevision);room.lastCheckpoint=payload;return true;
@@ -802,6 +809,8 @@ public final class GameServer implements AutoCloseable {
     private void startGame(Room room) {
         Game next = new Game(room.players, room.boardSize, random);
         next.deadline=System.currentTimeMillis()+15_000;
+        List<ChatEntry> previousChat=new ArrayList<>(room.chat);boolean previousPostGame=room.postGame;
+        room.postGame=false;room.chat.clear();
         room.playing=true;room.game=next;
         if (mysqlStorage) {
             try {
@@ -809,7 +818,13 @@ public final class GameServer implements AutoCloseable {
                 databaseStore.beginMatch(next.id,room.code,room.boardSize,room.cardTheme,next.startedAt,next.players,payload);
                 room.lastCheckpoint=payload;room.lastRevision=1;
             } catch (RuntimeException e) {
-                room.playing=false;room.game=null;cancelRoomCountdown(room);
+                cancelRoomCountdown(room);
+                if(DatabaseStore.unknownCommit(e)) {
+                    room.pendingStart=true;next.paused=true;
+                    broadcast(room,Message.of(Type.ERROR).with("message","Chưa xác định được kết quả tạo trận. Phòng tạm dừng để đối chiếu database; không tạo trận khác."));
+                    reconcileStart(room,next,previousChat,previousPostGame);return;
+                }
+                room.playing=false;room.game=null;room.postGame=previousPostGame;room.chat.addAll(previousChat);
                 broadcast(room,Message.of(Type.ERROR).with("message","Không tạo được trận trong database. Hãy thử bắt đầu lại."));
                 broadcastRoom(room);return;
             }
@@ -826,6 +841,26 @@ public final class GameServer implements AutoCloseable {
         broadcast(room,Message.of(Type.TURN_UPDATE).with("current",next.current()).with("deadline",next.deadline));
         armGameTimers(room);
         broadcastLobby();
+    }
+
+    private void reconcileStart(Room room,Game pending,List<ChatEntry> previousChat,boolean previousPostGame) {
+        scheduler.schedule(() -> { synchronized(lock) {
+            if(closed || rooms.get(room.code)!=room || !room.pendingStart)return;
+            try {
+                var saved=databaseStore.playingSnapshots().stream().filter(row->row.id().equals(pending.id)).findFirst();
+                if(saved.isEmpty()) {
+                    room.pendingStart=false;room.game=null;room.playing=false;room.postGame=previousPostGame;
+                    room.chat.clear();room.chat.addAll(previousChat);broadcastRoom(room);return;
+                }
+                var stored=saved.get();
+                if(stored.version()!=1 || !DatabaseStore.checksum(stored.payload()).equals(stored.checksum()))throw new IOException("Snapshot không hợp lệ");
+                Snapshot snapshot=decodeSnapshot(stored.payload());validateSnapshot(snapshot,stored);
+                Room restored=pausedRoom(snapshot,stored.payload());restored.lastRevision=stored.revision();rooms.put(room.code,restored);
+                scheduleRecoveryTimeout(restored);if(!checkpoint(restored))return;
+                for(String name:restored.players) {user(name).status="PLAYING";ClientHandler client=online.get(key(name));if(client!=null)sendGameState(client,restored);}
+                broadcastRoom(restored);broadcastLobby();
+            }catch(Exception unavailable){reconcileStart(room,pending,previousChat,previousPostGame);}
+        } },3,TimeUnit.SECONDS);
     }
 
     private void kick(ClientHandler client, String target) {
@@ -859,6 +894,7 @@ public final class GameServer implements AutoCloseable {
     private void leaveRoom(String username, boolean voluntary) {
         Room room = roomOf(username);
         if (room == null) return;
+        if(room.pendingStart) {ClientHandler c=online.get(key(username));if(c!=null)c.error("Đang đối chiếu kết quả tạo trận; vui lòng chờ.");return;}
         if (room.matchmaking && !room.playing && !room.postGame) {
             dissolveMatchmakingRoom(room, username, voluntary);
             return;
@@ -1466,14 +1502,14 @@ public final class GameServer implements AutoCloseable {
     private void changePassword(ClientHandler client, Message request) {
         UserRecord u = user(client.username);
         String next = request.string("newPassword");
-        if (!u.passwordHash.equals(hash(request.string("currentPassword")))) {
+        if (!PasswordHashes.verify(request.string("currentPassword"),u.passwordHash)) {
             profileResult(client, "password", false, "Mật khẩu hiện tại không đúng."); return;
         }
         if (next.length() < 6 || next.length() > 128) {
             profileResult(client, "password", false, "Mật khẩu mới cần từ 6 đến 128 ký tự."); return;
         }
         String previous = u.passwordHash;
-        u.passwordHash = hash(next);
+        u.passwordHash = PasswordHashes.hash(next);
         try { if (mysqlStorage) databaseStore.updatePassword(u.username, previous, u.passwordHash); else persistState(); }
         catch (Exception e) {
             u.passwordHash = previous;
@@ -1760,15 +1796,6 @@ public final class GameServer implements AutoCloseable {
         return values.stream().filter(value -> value.equalsIgnoreCase(target)).findFirst().orElse(null);
     }
 
-    private static String hash(String input) {
-        try {
-            byte[] bytes = MessageDigest.getInstance("SHA-256").digest(input.getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(bytes);
-        } catch (Exception e) {
-            throw new IllegalStateException(e);
-        }
-    }
-
     private String titleFor(String productId) {
         ShopProduct product = productById(productId);
         return product != null && product.type.equals("TITLE") ? product.name.replace("Danh hiệu ", "") : "";
@@ -1906,6 +1933,7 @@ public final class GameServer implements AutoCloseable {
         @Serial private static final long serialVersionUID=1L;
         transient byte[] lastCheckpoint;
         transient long lastRevision;
+        transient boolean pendingStart;
         transient ScheduledFuture<?> recoveryFuture;
         final String code;
         String name;

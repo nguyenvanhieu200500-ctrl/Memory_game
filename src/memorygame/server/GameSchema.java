@@ -122,6 +122,11 @@ final class GameSchema {
         ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
         """;
     static void upgrade(Connection c) throws SQLException {
+        try(ResultSet columns=c.getMetaData().getColumns(c.getCatalog(),null,"users","password_hash")) {
+            if(columns.next() && columns.getInt("COLUMN_SIZE")<255)try(Statement s=c.createStatement()) {
+                s.executeUpdate("ALTER TABLE users MODIFY password_hash VARCHAR(255) NOT NULL");
+            }
+        }
         try (Statement s = c.createStatement()) {
             s.executeUpdate(PRODUCTS); s.executeUpdate(MATCHES); s.executeUpdate(RESULTS); s.executeUpdate(SNAPSHOTS);
             s.executeUpdate(FRIENDSHIPS); s.executeUpdate(DIRECT_MESSAGES); s.executeUpdate(COIN_TRANSACTIONS);
@@ -153,6 +158,7 @@ final class GameSchema {
             s.executeUpdate("UPDATE matches SET card_theme='UNKNOWN' WHERE status<>'LEGACY' AND (card_theme IS NULL OR card_theme='')");
             s.executeUpdate("UPDATE match_results r JOIN matches m ON m.match_id=r.match_id SET r.recorded_at=COALESCE(m.ended_at,m.started_at) WHERE r.recorded_at IS NULL");
         }
+        ensureIndex(c, "match_results", "idx_results_history", "username, recorded_at DESC, legacy_order ASC, match_id DESC");
         ensureIndex(c, "match_results", "idx_results_user_time", "username, recorded_at DESC, match_id");
         ensureIndex(c, "match_history", "idx_history_user_time", "username, played_at DESC");
         ensureIndex(c, "matches", "idx_matches_status", "status, started_at");

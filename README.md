@@ -8,7 +8,7 @@
 - Màn hình đăng nhập hai cột tông kem, tím và xanh ngọc, có nút hiện/ẩn mật khẩu.
 - Tách riêng màn hình đăng ký và đăng nhập; đăng nhập không còn tự tạo tài khoản, đồng thời chặn đăng nhập trùng phiên.
 - Sảnh chờ giao diện Vườn kẹo: nền kem, khung trắng, tím và xanh ngọc, có danh sách online, ghép nhanh, phòng riêng và thanh hồ sơ/âm thanh. Tên người chơi, xu, điểm xếp hạng, số trận thắng và trạng thái cập nhật từ backend.
-- Nút **Hồ sơ** trong sảnh: xem thông tin tài khoản, đổi mật khẩu bằng mật khẩu hiện tại, chọn avatar PNG/JPG (dưới 10 MB, tự cắt vuông 128×128), hoặc trở lại mèo mặc định. Avatar được lưu theo tài khoản và hiển thị ở danh sách online/bảng xếp hạng. Server tự bổ sung cột `users.avatar` cho MySQL khi khởi động; dữ liệu tài khoản cũ vẫn được giữ.
+- Nút **Hồ sơ** trong sảnh: xem thông tin tài khoản, đổi mật khẩu bằng mật khẩu hiện tại, chọn avatar PNG/JPG (dưới 10 MB, tự cắt vuông 128×128), hoặc trở lại mèo mặc định. Avatar được lưu theo tài khoản và hiển thị ở danh sách online/bảng xếp hạng. Migration bổ sung cột `users.avatar` cho MySQL; dữ liệu tài khoản cũ vẫn được giữ.
 - Ghép trận tự động cho 2, 3 hoặc 4 người theo đúng kích thước bàn đã chọn; phòng do Server điều phối, không gán chủ phòng cho người chơi.
 - Ba chế độ bàn: 4×4 (8 cặp), 6×6 (18 cặp) và 8×8 (32 cặp).
 - Tạo phòng, vào phòng bằng mã, gửi/chấp nhận/từ chối lời mời 10 giây.
@@ -42,7 +42,7 @@ Cần biên dịch lại và khởi động lại cả server lẫn client sau k
 
 1. Mở Docker Desktop.
 2. Chạy `setup-database.bat` một lần để tạo MySQL và tải JDBC driver.
-3. Chạy `compile.bat` một lần.
+3. Cấu hình biến môi trường database theo [hướng dẫn migration](docs/database.md#áp-dụng), rồi chạy `migrate-database.bat` để biên dịch và nâng cấp schema trước khi chạy server.
 4. Chạy `run-server.bat` và giữ cửa sổ server mở.
 5. Chạy `run-client.bat` từ 2 đến 4 lần.
 6. Đăng ký tài khoản mới ở màn Đăng ký, sau đó mỗi cửa sổ đăng nhập bằng một tài khoản khác nhau.
@@ -81,7 +81,7 @@ Chạy `open-database-admin.bat`, sau đó đăng nhập Adminer tại `http://l
 - Hệ quản trị: `MySQL`
 - Máy chủ: `mysql`
 - Tài khoản: `memory_game`
-- Mật khẩu: `memory_game_123`
+- Mật khẩu: `<MEMORY_GAME_DB_PASSWORD>`
 - Cơ sở dữ liệu: `memory_game`
 
 Các đối tượng chính:

@@ -13,11 +13,14 @@ final class DatabaseStore {
     private final String password;
     private Connection serverLease;
 
-    DatabaseStore() {
+    DatabaseStore() { this(Boolean.parseBoolean(System.getenv("MEMORY_GAME_DB_MIGRATE"))); }
+
+    DatabaseStore(boolean migrate) {
         url = environment("MEMORY_GAME_DB_URL", DEFAULT_URL);
         user = environment("MEMORY_GAME_DB_USER", "memory_game");
-        password = environment("MEMORY_GAME_DB_PASSWORD", "memory_game_123");
-        initializeWithRetry();
+        password = System.getenv("MEMORY_GAME_DB_PASSWORD");
+        if(password==null || password.isBlank())throw new IllegalStateException("Cần cấu hình MEMORY_GAME_DB_PASSWORD");
+        if(migrate)initializeWithRetry();
     }
 
     Map<String, GameServer.UserRecord> loadUsers() {
@@ -52,7 +55,7 @@ final class DatabaseStore {
         } catch (SQLException e) {
             throw new IllegalStateException("Không thể đọc dữ liệu MySQL: " + e.getMessage(), e);
         }
-        for (var record : users.values()) record.history.addAll(history(record.username));
+
         return users;
     }
 
@@ -137,6 +140,9 @@ final class DatabaseStore {
                     p.setString(1, username);
                     try (ResultSet r = p.executeQuery()) { if (!r.next()) throw new SQLException("Unknown account"); coins = r.getInt(1); }
                 }
+                if(operationExists(c,"purchase:"+key(username)+":"+productId)) {
+                    c.rollback();return "Bạn đã sở hữu vật phẩm này.";
+                }
                 int price;
                 try (PreparedStatement p = c.prepareStatement("SELECT price FROM products WHERE product_id=? AND active=TRUE AND product_type IN ('THEME','TITLE') FOR SHARE")) {
                     p.setString(1, productId);
@@ -157,9 +163,48 @@ final class DatabaseStore {
                     p.setString(1, username); p.setString(2, productId); p.executeUpdate();
                 }
                 recordCoins(c,"purchase:"+key(username)+":"+productId,username,-price,"PURCHASE",null);
-                c.commit(); return "";
-            } catch (SQLException e) { c.rollback(); throw e; }
+                commit(c,fresh->operationExists(fresh,"purchase:"+key(username)+":"+productId)); return "";
+            } catch (SQLException e) { rollback(c,e); throw e; }
         } catch (SQLException e) { throw new IllegalStateException("Không thể lưu giao dịch mua vật phẩm", e); }
+    }
+
+    static final class UnknownCommit extends SQLException {
+        UnknownCommit(SQLException cause){super("Không xác định được kết quả commit; cần đối chiếu database",cause);}
+    }
+    static boolean unknownCommit(Throwable failure) {
+        for(Throwable cause=failure;cause!=null;cause=cause.getCause())if(cause instanceof UnknownCommit)return true;
+        return false;
+    }
+    @FunctionalInterface private interface Outcome { boolean committed(Connection connection) throws SQLException; }
+
+    /** A broken COMMIT response is not proof of rollback. Resolve on a fresh connection first. */
+    private void commit(Connection transaction,Outcome outcome) throws SQLException {
+        try { transaction.commit(); }
+        catch(SQLException uncertain) {
+            try { transaction.close(); } catch(SQLException close) { uncertain.addSuppressed(close); }
+            try(Connection fresh=open()) {
+                if(outcome.committed(fresh))return;
+            }catch(SQLException unavailable){uncertain.addSuppressed(unavailable);throw new UnknownCommit(uncertain);}
+            throw uncertain; // Caller must not acknowledge success or publish tentative RAM.
+        }
+    }
+    private static void rollback(Connection c,SQLException failure) {
+        try { c.rollback(); }catch(SQLException rollback){failure.addSuppressed(rollback);}
+    }
+    private boolean operationExists(Connection c,String operation) throws SQLException {
+        try(PreparedStatement p=c.prepareStatement("SELECT 1 FROM coin_transactions WHERE operation_id=?")) {
+            p.setString(1,operation);try(ResultSet r=p.executeQuery()){return r.next();}
+        }
+    }
+    private boolean completed(Connection c,String id) throws SQLException {
+        try(PreparedStatement p=c.prepareStatement("""
+            SELECT 1 FROM matches m WHERE m.match_id=? AND m.status='COMPLETED'
+              AND NOT EXISTS (SELECT 1 FROM match_snapshots s WHERE s.match_id=m.match_id)
+              AND m.player_count=(SELECT COUNT(*) FROM match_results r JOIN coin_transactions t
+                ON t.operation_id=CONCAT('reward:',r.match_id,':',LOWER(r.username))
+                AND t.username=r.username AND t.amount=r.coin_reward AND t.match_id=r.match_id
+                WHERE r.match_id=m.match_id AND r.score IS NOT NULL)
+            """)) { p.setString(1,id);try(ResultSet r=p.executeQuery()){return r.next();} }
     }
 
     private void recordCoins(Connection c,String operation,String username,int amount,String reason,String match) throws SQLException {
@@ -181,8 +226,13 @@ final class DatabaseStore {
                 p.setInt(5,players.size()); p.setLong(6,started); p.executeUpdate();
                 for (String name : players) { participant.setString(1,id); participant.setString(2,name); participant.setLong(3,started); participant.executeUpdate(); }
                 if(snapshot!=null) writeSnapshot(c,id,snapshot);
-                c.commit();
-            } catch (SQLException e) { c.rollback(); throw e; }
+                commit(c,fresh->{
+                    try(PreparedStatement check=fresh.prepareStatement("SELECT 1 FROM matches WHERE match_id=? AND room_code=? AND started_at=? AND player_count=?")) {
+                        check.setString(1,id);check.setString(2,room);check.setLong(3,started);check.setInt(4,players.size());
+                        try(ResultSet r=check.executeQuery()){return r.next();}
+                    }
+                });
+            } catch (SQLException e) { rollback(c,e); throw e; }
         } catch (SQLException e) { throw new IllegalStateException("Không thể lưu trận mới", e); }
     }
 
@@ -238,8 +288,8 @@ final class DatabaseStore {
                     p.setLong(1,ended); p.setString(2,reason); p.setBoolean(3,abnormal); p.setString(4,id); p.executeUpdate();
                 }
                 deleteSnapshot(c,id);
-                c.commit();
-            } catch (SQLException e) { c.rollback(); throw e; }
+                commit(c,fresh->completed(fresh,id));
+            } catch (SQLException e) { rollback(c,e); throw e; }
         } catch (SQLException e) { throw new IllegalStateException("Không thể lưu kết quả trận đấu",e); }
     }
 
@@ -247,13 +297,15 @@ final class DatabaseStore {
         List<String> history=new ArrayList<>();
         try (Connection c=open(); PreparedStatement p=c.prepareStatement("""
                 SELECT result_text FROM (
-                    SELECT r.result_text, r.recorded_at AS history_time, r.legacy_order, r.match_id AS ordering_id
+                    (SELECT r.result_text, r.recorded_at AS history_time, r.legacy_order, r.match_id AS ordering_id
                     FROM match_results r JOIN matches m ON m.match_id=r.match_id
                     WHERE r.username=? AND m.status IN ('COMPLETED','INTERRUPTED','LEGACY') AND r.result_text IS NOT NULL
+                    ORDER BY r.recorded_at DESC,r.legacy_order ASC,r.match_id DESC LIMIT 50)
                     UNION ALL
-                    SELECT h.result_text, UNIX_TIMESTAMP(h.played_at)*1000, h.history_order, CONCAT('legacy-',h.id)
+                    (SELECT h.result_text, UNIX_TIMESTAMP(h.played_at)*1000, h.history_order, CONCAT('legacy-',h.id)
                     FROM match_history h WHERE h.username=? AND NOT EXISTS
                         (SELECT 1 FROM match_results r WHERE r.legacy_history_id=h.id AND r.result_text IS NOT NULL)
+                    ORDER BY h.played_at DESC,h.history_order ASC,CONCAT('legacy-',h.id) DESC LIMIT 50)
                 ) combined ORDER BY history_time DESC, legacy_order ASC, ordering_id DESC LIMIT 50
                 """)) {
             p.setString(1,username); p.setString(2,username);
@@ -266,10 +318,18 @@ final class DatabaseStore {
         updateAccount("UPDATE users SET avatar=? WHERE username=?", avatar, username);
     }
     void updatePassword(String username, String previousHash, String passwordHash) {
-        try(Connection c=open();PreparedStatement p=c.prepareStatement("UPDATE users SET password_hash=? WHERE username=? AND password_hash=?")) {
+        try(Connection c=open();PreparedStatement p=c.prepareStatement("UPDATE users SET password_hash=? WHERE username=? AND BINARY password_hash=?")) {
             p.setString(1,passwordHash);p.setString(2,username);p.setString(3,previousHash);
-            if(p.executeUpdate()!=1) throw new SQLException("Mật khẩu đã thay đổi; hãy đăng nhập lại");
-        } catch(SQLException e){throw new IllegalStateException("Không lưu được mật khẩu",e);}
+            if(p.executeUpdate()!=1 && !passwordIs(username,passwordHash)) throw new SQLException("Mật khẩu đã thay đổi; hãy đăng nhập lại");
+        } catch(SQLException e){
+            try{if(passwordIs(username,passwordHash))return;}catch(SQLException unavailable){e.addSuppressed(unavailable);}
+            throw new IllegalStateException("Không lưu được mật khẩu",e);
+        }
+    }
+    private boolean passwordIs(String username,String expected) throws SQLException {
+        try(Connection c=open();PreparedStatement p=c.prepareStatement("SELECT 1 FROM users WHERE username=? AND BINARY password_hash=?")) {
+            p.setString(1,username);p.setString(2,expected);try(ResultSet r=p.executeQuery()){return r.next();}
+        }
     }
     void updateEquipment(String username, String productId, boolean theme) {
         String column=theme?"equipped_theme":"equipped_title";
@@ -332,7 +392,7 @@ final class DatabaseStore {
                 }
                 deleteSnapshot(c,id);
                 c.commit();
-            } catch(SQLException e){c.rollback();throw e;}
+            } catch(SQLException e){rollback(c,e);throw e;}
         } catch(SQLException e){throw new IllegalStateException("Không ghi được trạng thái trận gián đoạn",e);}
     }
 
@@ -383,8 +443,13 @@ final class DatabaseStore {
                     p.setBytes(1,payload);p.setString(2,checksum(payload));p.setLong(3,System.currentTimeMillis());p.setString(4,id);p.setLong(5,expectedRevision);
                     if(p.executeUpdate()!=1)throw new SQLException("Snapshot revision conflict");
                 }
-                c.commit();return expectedRevision+1;
-            }catch(SQLException e){c.rollback();throw e;}
+                commit(c,fresh->{
+                    try(PreparedStatement p=fresh.prepareStatement("SELECT 1 FROM match_snapshots WHERE match_id=? AND revision=? AND checksum=?")) {
+                        p.setString(1,id);p.setLong(2,expectedRevision+1);p.setString(3,checksum(payload));
+                        try(ResultSet r=p.executeQuery()){return r.next();}
+                    }
+                });return expectedRevision+1;
+            }catch(SQLException e){rollback(c,e);throw e;}
         }catch(SQLException e){throw new IllegalStateException("Không lưu được snapshot",e);}
     }
     List<StoredSnapshot> playingSnapshots() {
@@ -420,7 +485,7 @@ final class DatabaseStore {
                 statement.executeUpdate("""
                         CREATE TABLE IF NOT EXISTS users (
                             username VARCHAR(16) PRIMARY KEY,
-                            password_hash CHAR(64) NOT NULL,
+                            password_hash VARCHAR(255) NOT NULL,
                             rating INT NOT NULL DEFAULT 0,
                             wins INT NOT NULL DEFAULT 0,
                             losses INT NOT NULL DEFAULT 0,

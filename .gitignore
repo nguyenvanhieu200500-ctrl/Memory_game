@@ -6,3 +6,7 @@
 /dist/*.zip
 /sources.txt
 *.log
+
+.env
+.env.*
+!.env.example

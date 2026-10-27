@@ -40,4 +40,4 @@ exit /b 1
 :ready
 echo MySQL da san sang tai localhost:3307.
 echo Adminer: http://localhost:8080
-echo Tai khoan DB: memory_game / memory_game_123
+echo Cau hinh MEMORY_GAME_DB_PASSWORD va chay MigrateMain bang tai khoan migration.
