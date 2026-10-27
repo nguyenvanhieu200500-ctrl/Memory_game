@@ -7,7 +7,8 @@ import java.util.*;
 final class FriendshipStore {
     private final DatabaseStore database;
     FriendshipStore(DatabaseStore database) { this.database=database; }
-    record Invitation(String id,String sender,String recipient) {}
+    record Invitation(String id,String sender,String recipient,long sentAt) {}
+    record Reply(String sender,boolean changed) {}
 
     void importLegacy(Properties friends) {
         try(Connection c=database.open()) {
@@ -44,9 +45,9 @@ final class FriendshipStore {
                 for(String name:new TreeSet<>(List.of(sender,recipient)))try(PreparedStatement p=c.prepareStatement("SELECT username FROM users WHERE username=? FOR UPDATE")) {
                     p.setString(1,name);try(ResultSet r=p.executeQuery()){if(!r.next())throw new SQLException("Unknown user");}
                 }
-                try(PreparedStatement p=c.prepareStatement("SELECT status,updated_at FROM friendships WHERE pair_low=LEAST(?,?) AND pair_high=GREATEST(?,?) FOR UPDATE")) {
+                try(PreparedStatement p=c.prepareStatement("SELECT status FROM friendships WHERE pair_low=LEAST(?,?) AND pair_high=GREATEST(?,?) FOR UPDATE")) {
                     p.setString(1,sender);p.setString(2,recipient);p.setString(3,sender);p.setString(4,recipient);
-                    try(ResultSet r=p.executeQuery()) { if(r.next() && (r.getString(1).equals("ACCEPTED") || r.getString(1).equals("PENDING") && r.getLong(2)>now-120_000)) throw new SQLException("Đã là bạn bè hoặc đã có lời mời đang chờ"); }
+                    try(ResultSet r=p.executeQuery()) { if(r.next() && (r.getString(1).equals("ACCEPTED") || r.getString(1).equals("PENDING"))) throw new SQLException("Đã là bạn bè hoặc đã có lời mời đang chờ"); }
                 }
                 try(PreparedStatement p=c.prepareStatement("""
                     INSERT INTO friendships(sender,recipient,request_id,status,created_at,updated_at) VALUES (?,?,?,'PENDING',?,?)
@@ -61,31 +62,28 @@ final class FriendshipStore {
     List<Invitation> pending(String recipient) {
         List<Invitation> result=new ArrayList<>();
         try(Connection c=database.open()) {
-            try(PreparedStatement p=c.prepareStatement("UPDATE friendships SET status='EXPIRED',updated_at=? WHERE status='PENDING' AND updated_at<=?")) {
-                long now=System.currentTimeMillis();p.setLong(1,now);p.setLong(2,now-120_000);p.executeUpdate();
-            }
-            try(PreparedStatement p=c.prepareStatement("SELECT request_id,sender,recipient FROM friendships WHERE recipient=? AND status='PENDING'")) {
-                p.setString(1,recipient);try(ResultSet r=p.executeQuery()){while(r.next())result.add(new Invitation(r.getString(1),r.getString(2),r.getString(3)));}
+            try(PreparedStatement p=c.prepareStatement("SELECT request_id,sender,recipient,created_at FROM friendships WHERE recipient=? AND status='PENDING' ORDER BY created_at,request_id")) {
+                p.setString(1,recipient);try(ResultSet r=p.executeQuery()){while(r.next())result.add(new Invitation(r.getString(1),r.getString(2),r.getString(3),r.getLong(4)));}
             }
         }catch(SQLException e){throw new IllegalStateException("Không đọc được lời mời",e);}
         return result;
     }
-    String reply(String recipient,String id,boolean accepted) {
+    Reply reply(String recipient,String id,boolean accepted) {
         try(Connection c=database.open()) {
             c.setAutoCommit(false);
             try {
-                String sender,status;long updated;
-                try(PreparedStatement p=c.prepareStatement("SELECT sender,status,updated_at FROM friendships WHERE request_id=? AND recipient=? FOR UPDATE")) {
+                String sender,status;
+                try(PreparedStatement p=c.prepareStatement("SELECT sender,status FROM friendships WHERE request_id=? AND recipient=? FOR UPDATE")) {
                     p.setString(1,id);p.setString(2,recipient);
-                    try(ResultSet r=p.executeQuery()){if(!r.next())throw new SQLException("Lời mời không tồn tại");sender=r.getString(1);status=r.getString(2);updated=r.getLong(3);}
+                    try(ResultSet r=p.executeQuery()){if(!r.next())throw new SQLException("Lời mời không tồn tại");sender=r.getString(1);status=r.getString(2);}
                 }
                 String desired=accepted?"ACCEPTED":"DECLINED";
-                if(status.equals(desired)){c.commit();return sender;}
-                if(!status.equals("PENDING") || updated<=System.currentTimeMillis()-120_000)throw new SQLException("Lời mời đã hết hạn");
+                if(status.equals(desired)){c.commit();return new Reply(sender,false);}
+                if(!status.equals("PENDING"))throw new SQLException("Lời mời đã được xử lý");
                 try(PreparedStatement p=c.prepareStatement("UPDATE friendships SET status=?,updated_at=? WHERE request_id=?")) {
                     p.setString(1,desired);p.setLong(2,System.currentTimeMillis());p.setString(3,id);p.executeUpdate();
                 }
-                c.commit();return sender;
+                c.commit();return new Reply(sender,true);
             }catch(SQLException e){c.rollback();throw e;}
         }catch(SQLException e){throw new IllegalStateException("Không lưu được phản hồi kết bạn",e);}
     }

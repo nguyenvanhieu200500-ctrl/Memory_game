@@ -16,7 +16,7 @@ public final class Protocol {
         QUEUE_JOIN, QUEUE_LEAVE,
         ROOM_CREATE, ROOM_JOIN, ROOM_UPDATE, ROOM_LEAVE, ROOM_READY, ROOM_START, ROOM_KICK,
         INVITE_SEND, INVITE_RECEIVED, INVITE_REPLY,
-        FRIEND_SEND, FRIEND_RECEIVED, FRIEND_REPLY, FRIEND_UPDATE, WHISPER_SEND, WHISPER_MESSAGE, WHISPER_HISTORY, WHISPER_PAGE_REQUEST, WHISPER_PAGE, WHISPER_READ,
+        FRIEND_SEND, FRIEND_RECEIVED, FRIEND_REPLY, FRIEND_UPDATE, FRIEND_SYNC_REQUEST, WHISPER_SEND, WHISPER_MESSAGE, WHISPER_HISTORY, WHISPER_PAGE_REQUEST, WHISPER_PAGE, WHISPER_READ,
         CARD_PICK, CHAT_SEND, CHAT_MESSAGE,
         GAME_START, GAME_PAUSED, GAME_RESUME, CARD_REVEALED, CARD_HIDDEN, MATCH_RESULT, TURN_UPDATE, GAME_END,
         RANKING_REQUEST, RANKING_UPDATE, HISTORY_REQUEST, HISTORY_UPDATE,
@@ -27,6 +27,10 @@ public final class Protocol {
     public static final int CHAT_HISTORY_LIMIT = 100;
 
     public record ChatEntry(String username, String text, long timestamp) implements Serializable {
+        @Serial private static final long serialVersionUID = 1L;
+    }
+
+    public record FriendInvitation(String requestId, String from, String avatar, long sentAt) implements Serializable {
         @Serial private static final long serialVersionUID = 1L;
     }
 

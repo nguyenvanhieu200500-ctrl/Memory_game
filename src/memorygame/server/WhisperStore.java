@@ -9,19 +9,6 @@ import java.util.*;
 
 /** Server-owned private messages. Access is scoped to the authenticated account. */
 final class WhisperStore {
-    static final String SCHEMA = """
-            CREATE TABLE IF NOT EXISTS private_messages (
-                id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                sender VARCHAR(16) NOT NULL,
-                recipient VARCHAR(16) NOT NULL,
-                message_text VARCHAR(300) NOT NULL,
-                sent_at BIGINT NOT NULL,
-                INDEX idx_private_sender (sender, id),
-                INDEX idx_private_recipient (recipient, id),
-                FOREIGN KEY (sender) REFERENCES users(username) ON DELETE CASCADE,
-                FOREIGN KEY (recipient) REFERENCES users(username) ON DELETE CASCADE
-            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
-            """;
     private record Saved(String recipient, ChatEntry entry) implements Serializable {}
     private final DatabaseStore database;
     private final Path file;

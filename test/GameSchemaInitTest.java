@@ -13,6 +13,9 @@ public final class GameSchemaInitTest {
             }
         }
         DatabaseStore db=new DatabaseStore();
+        try(var c=db.open();var tables=c.getMetaData().getTables(c.getCatalog(),null,"private_messages",new String[]{"TABLE"})) {
+            if(tables.next())throw new AssertionError("Fresh installation created retired private_messages table");
+        }
         if(db.products(true).size()!=6)throw new AssertionError("SQL catalog differs");
         try(var c=db.open();var r=c.getMetaData().getImportedKeys(c.getCatalog(),null,"user_items")) {
             boolean products=false,users=false;

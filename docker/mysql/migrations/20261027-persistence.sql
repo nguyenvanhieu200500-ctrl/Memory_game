@@ -64,18 +64,3 @@ CREATE TABLE IF NOT EXISTS match_snapshots (
             CONSTRAINT ck_snapshot_time CHECK (saved_at >= 0)
         ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS private_messages (
-                id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                sender VARCHAR(16) NOT NULL,
-                recipient VARCHAR(16) NOT NULL,
-                message_text VARCHAR(300) NOT NULL,
-                sent_at BIGINT NOT NULL,
-                INDEX idx_private_sender (sender, id),
-                INDEX idx_private_recipient (recipient, id),
-                FOREIGN KEY (sender) REFERENCES users(username) ON DELETE CASCADE,
-                FOREIGN KEY (recipient) REFERENCES users(username) ON DELETE CASCADE
-            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-INSERT INTO direct_messages(sender,recipient,message_text,sent_at,legacy_key)
-SELECT sender,recipient,message_text,sent_at,CONCAT('private_messages:',id)
-FROM private_messages old WHERE NOT EXISTS
-(SELECT 1 FROM direct_messages d WHERE d.legacy_key=CONCAT('private_messages:',old.id));

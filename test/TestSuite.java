@@ -27,6 +27,8 @@ public final class TestSuite {
         try {
             check("memorygame.server.ServerMonitorViewTest.main", () -> memorygame.server.ServerMonitorViewTest.main(new String[0]));
             check("memorygame.client.HistoryPanelTest.main", () -> memorygame.client.HistoryPanelTest.main(new String[0]));
+            check("memorygame.client.FriendRequestsPanelTest.main", () -> memorygame.client.FriendRequestsPanelTest.main(new String[0]));
+            check("memorygame.client.FriendRequestNotificationsTest.main", () -> memorygame.client.FriendRequestNotificationsTest.main(new String[0]));
             check("memorygame.client.RankingPanelTest.main", () -> memorygame.client.RankingPanelTest.main(new String[0]));
             check("memorygame.client.CardThemeTest.main", () -> memorygame.client.CardThemeTest.main(new String[0]));
             check("memorygame.client.CreateRoomPanelTest.main", () -> memorygame.client.CreateRoomPanelTest.main(new String[0]));
@@ -41,6 +43,7 @@ public final class TestSuite {
             check("memorygame.client.StreamingMusicTest.main", () -> memorygame.client.StreamingMusicTest.main(new String[0]));
             check("ChatTest.run", () -> ChatTest.run(server, port));
             check("SocialTest.main", () -> SocialTest.main(new String[0]));
+            check("FriendRequestLifecycleTest.main", () -> FriendRequestLifecycleTest.main(new String[0]));
             check("SmokeTest.run", () -> SmokeTest.run(server, port, 4));
             check("SmokeTest.run", () -> SmokeTest.run(server, port, 6));
             check("SmokeTest.run", () -> SmokeTest.run(server, port, 8));

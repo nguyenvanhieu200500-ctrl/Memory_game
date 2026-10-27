@@ -65,18 +65,6 @@ SELECT username, rating, wins, losses, games, coins,
             ELSE ROUND(wins * 100.0 / games, 2) END AS win_rate
 FROM users;
 
-CREATE TABLE IF NOT EXISTS private_messages (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    sender VARCHAR(16) NOT NULL,
-    recipient VARCHAR(16) NOT NULL,
-    message_text VARCHAR(300) NOT NULL,
-    sent_at BIGINT NOT NULL,
-    INDEX idx_private_sender (sender, id),
-    INDEX idx_private_recipient (recipient, id),
-    FOREIGN KEY (sender) REFERENCES users(username) ON DELETE CASCADE,
-    FOREIGN KEY (recipient) REFERENCES users(username) ON DELETE CASCADE
-) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-
 CREATE TABLE IF NOT EXISTS matches (
     match_id VARCHAR(64) PRIMARY KEY,
     room_code VARCHAR(32),

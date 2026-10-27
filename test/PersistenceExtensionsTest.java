@@ -10,6 +10,69 @@ import static memorygame.server.GameDatabaseTest.*;
 /** Real MySQL, isolated by DatabaseFlowsTest. */
 public final class PersistenceExtensionsTest {
     static void fails(Runnable action) {try{action.run();throw new AssertionError("Expected failure");}catch(IllegalStateException expected){}}
+    static boolean tableExists(Connection c,String table)throws SQLException {
+        try(ResultSet r=c.getMetaData().getTables(c.getCatalog(),null,table,new String[]{"TABLE"})){return r.next();}
+    }
+    static void migrateLegacyChat(DatabaseStore db)throws Exception {
+        try(Connection c=db.open();Statement s=c.createStatement()) {
+            s.executeUpdate("""
+                CREATE TABLE private_messages (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY, sender VARCHAR(16) NOT NULL, recipient VARCHAR(16) NOT NULL,
+                    message_text VARCHAR(300) NOT NULL, sent_at BIGINT NOT NULL,
+                    INDEX idx_private_sender(sender,id), INDEX idx_private_recipient(recipient,id),
+                    FOREIGN KEY(sender) REFERENCES users(username) ON DELETE CASCADE,
+                    FOREIGN KEY(recipient) REFERENCES users(username) ON DELETE CASCADE
+                ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+                """);
+            s.executeUpdate("INSERT INTO private_messages(id,sender,recipient,message_text,sent_at) VALUES (1001,'alice','bob','same text',700),(1002,'alice','bob','same text',700)");
+            s.executeUpdate("INSERT INTO direct_messages(sender,recipient,message_text,sent_at,legacy_key) VALUES ('alice','bob','same text',700,'private_messages:1001')");
+            s.executeUpdate("CREATE TRIGGER fail_direct_message BEFORE INSERT ON direct_messages FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='injected migration failure'");
+            try { DirectMessagesMigration.migrate(c); throw new AssertionError("Expected injected migration failure"); }
+            catch(SQLException expected) { check(expected.getMessage().contains("injected migration failure"),"Unexpected migration failure: "+expected.getMessage()); }
+        }
+        try(Connection c=db.open();Statement s=c.createStatement()) {
+            check(tableExists(c,"private_messages"),"Failure removed legacy source");
+            check(number(c,"SELECT COUNT(*) FROM private_messages")==2,"Failure changed source rows");
+            check(number(c,"SELECT COUNT(*) FROM direct_messages WHERE legacy_key IN ('private_messages:1001','private_messages:1002')")==1,"Failed transaction partially copied rows");
+            s.executeUpdate("DROP TRIGGER fail_direct_message");
+        }
+        MigrateMain.main(new String[0]);
+        try(Connection c=db.open()) {
+            check(!tableExists(c,"private_messages"),"Validated migration did not drop source");
+            check(number(c,"SELECT COUNT(*) FROM direct_messages WHERE legacy_key IN ('private_messages:1001','private_messages:1002')")==2,"Identical messages collapsed or were lost");
+            check(number(c,"SELECT COUNT(*) FROM direct_messages WHERE legacy_key='private_messages:1002' AND sender='alice' AND recipient='bob' AND message_text='same text' AND read_at IS NULL AND sent_at=700")==1,"Migration changed message data or invented read time");
+        }
+        try(Connection c=db.open()) { DirectMessagesMigration.migrate(c); }
+        new DatabaseStore();
+        try(Connection c=db.open()) { check(!tableExists(c,"private_messages"),"Startup recreated removed source table"); }
+
+        try(Connection c=db.open();Statement s=c.createStatement()) {
+            s.executeUpdate("CREATE TABLE private_messages (id BIGINT PRIMARY KEY,sender VARCHAR(16) NOT NULL,recipient VARCHAR(16) NOT NULL,message_text VARCHAR(300) NOT NULL,sent_at BIGINT NOT NULL) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+            s.executeUpdate("INSERT INTO private_messages VALUES (2001,'alice','bob','old body',800)");
+            s.executeUpdate("INSERT INTO direct_messages(sender,recipient,message_text,sent_at,legacy_key) VALUES ('alice','bob','different body',800,'private_messages:2001')");
+        }
+        try(Connection c=db.open()) {
+            try { DirectMessagesMigration.migrate(c); throw new AssertionError("Expected legacy_key conflict"); }
+            catch(SQLException expected) { check(expected.getMessage().contains("conflicting direct_messages legacy_key"),"Conflict was not reported specifically"); }
+        }
+        try(Connection c=db.open();Statement s=c.createStatement()) {
+            check(tableExists(c,"private_messages"),"Conflict removed legacy source");
+            s.executeUpdate("DROP TABLE private_messages");
+            s.executeUpdate("DELETE FROM direct_messages WHERE legacy_key='private_messages:2001'");
+        }
+        try(Connection c=db.open();Statement s=c.createStatement()) {
+            s.executeUpdate("CREATE TABLE private_messages (id BIGINT PRIMARY KEY,sender VARCHAR(16) NOT NULL,recipient VARCHAR(16) NOT NULL,message_text VARCHAR(300) NOT NULL,sent_at BIGINT NOT NULL) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+            s.executeUpdate("INSERT INTO private_messages VALUES (3001,'alice','alice','invalid self message',900)");
+        }
+        try(Connection c=db.open()) {
+            try { DirectMessagesMigration.migrate(c); throw new AssertionError("Expected constraint validation failure"); }
+            catch(SQLException expected) { check(expected.getMessage().contains("violate direct_messages constraints"),"Invalid source row was not reported specifically"); }
+        }
+        try(Connection c=db.open();Statement s=c.createStatement()) {
+            check(tableExists(c,"private_messages"),"Invalid source data was dropped");
+            s.executeUpdate("DROP TABLE private_messages");
+        }
+    }
     public static void main(String[] args) throws Exception {
         DatabaseStore db=new DatabaseStore();
         Map<String,GameServer.UserRecord> users=new HashMap<>();
@@ -24,9 +87,17 @@ public final class PersistenceExtensionsTest {
         fails(()->friends.request("alice","alice"));fails(()->friends.request("bob","alice"));
         String request=friends.request("alice","charlie");
         fails(()->friends.request("charlie","alice"));fails(()->friends.reply("bob",request,true));
+        try(Connection c=db.open();PreparedStatement p=c.prepareStatement("UPDATE friendships SET created_at=?,updated_at=? WHERE request_id=?")) {
+            long old=System.currentTimeMillis()-180_000;p.setLong(1,old);p.setLong(2,old);p.setString(3,request);p.executeUpdate();
+        }
         check(new FriendshipStore(new DatabaseStore()).pending("charlie").get(0).id().equals(request),"Pending lost on restart");
+        check(friends.pending("charlie").get(0).sentAt()<=System.currentTimeMillis()-120_000,"Old pending invitation expired");
         friends.reply("charlie",request,true);friends.reply("charlie",request,true);
         String decline=friends.request("bob","dana");friends.reply("dana",decline,false);
+        try(Connection c=db.open();PreparedStatement p=c.prepareStatement("UPDATE friendships SET status='EXPIRED' WHERE request_id=?")) {
+            p.setString(1,decline);p.executeUpdate();
+        }
+        check(friends.pending("dana").isEmpty(),"Previously expired invitation became pending again");
         String reverse=friends.request("dana","bob");friends.reply("bob",reverse,true);
         try(Connection c=db.open();Statement s=c.createStatement()) {
             check(number(c,"SELECT COUNT(*) FROM friendships")==3,"Duplicate pairs");
@@ -35,9 +106,9 @@ public final class PersistenceExtensionsTest {
             fails(()->friends.request("alice","dana"));
             s.executeUpdate("DROP TRIGGER fail_friend");
             check(friends.pending("dana").isEmpty(),"Failed invitation persisted");
-            s.executeUpdate("INSERT INTO private_messages(sender,recipient,message_text,sent_at) VALUES ('alice','bob','real SQL source',100)");
         }
         new DatabaseStore();new DatabaseStore();
+        migrateLegacyChat(db);
         Path source=Files.createTempDirectory("legacy-chat-").resolve("private-messages.bin");
         WhisperStore file=new WhisperStore(null,source);
         file.append("bob",new ChatEntry("alice","real file source",101));
@@ -46,7 +117,7 @@ public final class PersistenceExtensionsTest {
         for(int i=0;i<105;i++)chat.append(i%2==0?"bob":"alice",new ChatEntry(i%2==0?"alice":"bob","message "+i,1000+i));
         var first=chat.page("alice","bob",0);var second=chat.page("alice","bob",first.before());
         var third=chat.page("alice","bob",second.before());
-        check(first.messages().size()==50 && second.messages().size()==50 && third.messages().size()==8 && !third.hasMore(),"Pagination loss/duplicate");
+        check(first.messages().size()==50 && second.messages().size()==50 && third.messages().size()==9 && !third.hasMore(),"Pagination loss/duplicate: "+first.messages().size()+"/"+second.messages().size()+"/"+third.messages().size()+" more="+third.hasMore());
         check(chat.page("charlie","bob",0).messages().isEmpty(),"Third party accessed history");
         chat.markRead("charlie","alice",Long.MAX_VALUE);
         try(Connection c=db.open();Statement sql=c.createStatement()) {
@@ -54,7 +125,7 @@ public final class PersistenceExtensionsTest {
             chat.markRead("bob","alice",first.newest());
             check(number(c,"SELECT COUNT(*) FROM direct_messages WHERE recipient='bob' AND read_at IS NULL")==0,"Missing read receipts");
             check(number(c,"SELECT COUNT(*) FROM direct_messages WHERE recipient='alice' AND read_at IS NOT NULL")==0,"Read receipt scope");
-            check(number(c,"SELECT COUNT(*) FROM direct_messages WHERE legacy_key IS NOT NULL")==3,"Legacy chat imported twice/lost duplicates");
+            check(number(c,"SELECT COUNT(*) FROM direct_messages WHERE legacy_key IS NOT NULL")==4,"Legacy SQL/file chat imported twice or lost duplicates");
             check(Files.exists(source),"Source deleted");
             db.purchase("alice","theme_ocean");db.purchase("alice","theme_ocean");
             check(number(c,"SELECT COUNT(*) FROM coin_transactions WHERE reason='PURCHASE'")==1,"Duplicate purchase journal");
@@ -85,7 +156,7 @@ public final class PersistenceExtensionsTest {
                 if(!statement.isBlank())sql.executeUpdate(statement);
             }
             new DatabaseStore();
-            check(number(c,"SELECT COUNT(*) FROM direct_messages")==108,"Repeated migration changed messages");
+            check(number(c,"SELECT COUNT(*) FROM direct_messages")==109,"Repeated migration changed messages");
         }
         Path oldDirectory=Files.createTempDirectory("partial-file-migration-");
         var oldUser=new GameServer.UserRecord("FileUser","hash");oldUser.coins=27;

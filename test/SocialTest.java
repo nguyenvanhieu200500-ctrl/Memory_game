@@ -50,8 +50,7 @@ public final class SocialTest {
             check(b.until(Type.FRIEND_UPDATE).<List<String>>value("friends").contains("socialAlice"), "Missing reciprocal friend");
             check(a.until(Type.FRIEND_UPDATE).<List<String>>value("friends").contains("socialBob"), "Missing friend"); a.until(Type.FRIEND_UPDATE);
             b.send(Message.of(Type.FRIEND_REPLY).with("requestId", id).with("accepted", true));
-            if("file".equalsIgnoreCase(System.getenv("MEMORY_GAME_STORAGE")))b.until(Type.ERROR);
-            else { b.until(Type.FRIEND_UPDATE);a.until(Type.FRIEND_UPDATE);a.until(Type.FRIEND_UPDATE); }
+            b.until(Type.FRIEND_UPDATE); // Duplicate same decision is idempotent; the authoritative snapshot remains valid.
             a.send(Message.of(Type.WHISPER_SEND).with("username", "socialBob").with("from", "socialCarol").with("text", "Xin chào"));
             Message received = b.until(Type.WHISPER_MESSAGE);
             check(received.string("from").equals("socialAlice"), "Forged sender");

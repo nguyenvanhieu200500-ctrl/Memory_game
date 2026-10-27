@@ -30,7 +30,7 @@ Người nhận thấy người mời, tên/mã phòng, số người, chủ đ�
 
 ## Kết bạn và trò chuyện
 
-Bấm người chơi khác trong danh sách online để chọn **Kết bạn** hoặc **Thì thầm**. Kết bạn cần người nhận đồng ý; lời mời có hạn 2 phút, được gửi lại khi người nhận đăng nhập nếu còn hạn. MySQL giữ lời mời/quan hệ trong `friendships`; chế độ file dùng `friends.properties`.
+Bấm người chơi khác trong danh sách online để chọn **Kết bạn** hoặc **Thì thầm**. Kết bạn cần người nhận đồng ý; lời mời tiếp tục chờ khi người nhận offline hoặc server khởi động lại, đến khi người nhận chấp nhận hoặc từ chối. Bấm chuông ở góc danh sách online để xem và xử lý lời mời. MySQL giữ lời mời/quan hệ trong `friendships`; chế độ file giữ quan hệ trong `friends.properties` và lời mời trong `friend-requests.properties` dưới thư mục dữ liệu server.
 
 **Chat phòng:** trong trận, mở tab cạnh bàn chơi, nhập và nhấn Enter hoặc **Gửi**. Tin tối đa 300 ký tự, không có ký tự điều khiển; người trong phòng và màn hình giám sát đều xem được. Server giữ 100 tin gần nhất, xóa khi bắt đầu ván mới hoặc giải tán phòng; ở chế độ MySQL, chat nằm trong snapshot phục hồi. Không gửi khi trận tạm dừng hoặc người chơi đã rời cuộc chơi.
 
@@ -40,7 +40,7 @@ Cache client ở `.memory-game-online/chats` dưới thư mục người dùng, 
 
 ## Kết nối lại, kết quả và cửa hàng
 
-Client tự thử kết nối lại tối đa 10 lần. Server giữ chỗ người mất kết nối 30 giây; phát hiện không hoạt động 60 giây và hỗ trợ bỏ cuộc. Phục hồi sau restart MySQL khác với kết nối lại thông thường: phải xác nhận tiếp tục trong 120 giây, restart tiếp không gia hạn. Xem [cơ chế phục hồi](database.md#transaction-và-đồng-bộ).
+Client tự thử kết nối lại tối đa 10 lần. Server giữ chỗ người mất kết nối 30 giây; phát hiện không hoạt động 60 giây và hỗ trợ bỏ cuộc. Khi server game khởi động lại và sử dụng trạng thái đã lưu trong MySQL để phục hồi trận, người chơi phải xác nhận tiếp tục trong 120 giây; khởi động lại server game lần nữa không gia hạn. Xem [cơ chế phục hồi](database.md#transaction-và-đồng-bộ).
 
 Sau khi tính điểm, người đồng điểm nhận cùng hạng. Server quản lý ví/thưởng; mua mặt sau thẻ và danh hiệu không tạo lợi thế. Mặt thẻ có chuyển động nâng/lật và hiệu ứng Cổ điển, sóng Đại dương, neon, ánh kim. Nhạc nền dùng đoạn 5 phút, phát theo luồng rồi lặp; có nút bật/tắt riêng. [README audio](../src/memorygame/client/audio/README.md) ghi nguồn và định dạng; hiệu ứng thao tác được tạo trong ứng dụng.
 

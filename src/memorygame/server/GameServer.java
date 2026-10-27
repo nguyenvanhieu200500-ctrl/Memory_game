@@ -4,6 +4,7 @@ import memorygame.common.Protocol.Message;
 import memorygame.common.Protocol.Type;
 import memorygame.common.Protocol;
 import memorygame.common.Protocol.ChatEntry;
+import memorygame.common.Protocol.FriendInvitation;
 
 import java.io.*;
 import java.net.ServerSocket;
@@ -12,6 +13,7 @@ import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
@@ -50,7 +52,7 @@ public final class GameServer implements AutoCloseable {
     private final Map<String, Room> rooms = new HashMap<>();
     private final Map<String, LinkedHashSet<String>> queues = new HashMap<>();
     private final Properties friendships = new Properties();
-    private final Map<String, String[]> friendRequests = new HashMap<>();
+    private final Map<String, FriendRequestRecord> friendRequests = new LinkedHashMap<>();
     private final Map<String, Invite> invites = new HashMap<>();
     private final Map<String, ScheduledFuture<?>> disconnectTasks = new HashMap<>();
     private volatile boolean running;
@@ -75,6 +77,19 @@ public final class GameServer implements AutoCloseable {
         if (Files.exists(friendsFile)) {
             try (InputStream in = Files.newInputStream(friendsFile)) { friendships.load(in); }
             catch (IOException e) { throw new UncheckedIOException("Không thể đọc danh sách bạn bè", e); }
+        }
+        Path requestsFile = stateFile.resolveSibling("friend-requests.properties");
+        if (Files.exists(requestsFile)) {
+            Properties stored = new Properties();
+            try (InputStream in = Files.newInputStream(requestsFile)) { stored.load(in); }
+            catch (IOException e) { throw new UncheckedIOException("Không thể đọc lời mời kết bạn", e); }
+            for (String id : stored.stringPropertyNames()) {
+                String[] fields = stored.getProperty(id, "").split("\\|", -1);
+                if (fields.length == 4 && (fields[2].equals("PENDING") || fields[2].equals("ACCEPTED") || fields[2].equals("DECLINED"))) {
+                    try { friendRequests.put(id, new FriendRequestRecord(fields[0], fields[1], fields[2], Long.parseLong(fields[3]))); }
+                    catch (RuntimeException ignored) { }
+                }
+            }
         }
         friendshipStore = mysqlStorage ? new FriendshipStore(databaseStore) : null;
         if(mysqlStorage) friendshipStore.importLegacy(friendships);
@@ -212,6 +227,7 @@ public final class GameServer implements AutoCloseable {
                     case INVITE_REPLY -> replyInvite(client, message.string("inviteId"), message.bool("accepted"));
                     case FRIEND_SEND -> requestFriend(client, message.string("username"));
                     case FRIEND_REPLY -> replyFriend(client, message.string("requestId"), message.bool("accepted"));
+                    case FRIEND_SYNC_REQUEST -> sendFriendState(client, "");
                     case WHISPER_PAGE_REQUEST -> whisperPage(client,message);
                     case WHISPER_READ -> {
                         try { whisperStore.markRead(client.username,message.string("username"),message.longValue("through")); }
@@ -285,14 +301,11 @@ public final class GameServer implements AutoCloseable {
                 .with("equippedTitle", user.equippedTitle));
 
         try {
-            if(mysqlStorage) for(var invitation:friendshipStore.pending(client.username))
-                client.send(Message.of(Type.FRIEND_RECEIVED).with("from",invitation.sender()).with("requestId",invitation.id()));
+            sendFriendState(client, "");
             client.send(Message.of(Type.WHISPER_HISTORY).with("conversations", whisperStore.history(client.username)));
         } catch (Exception e) {
             client.error("Không thể tải lịch sử tin nhắn từ server. Vui lòng đăng nhập lại để thử lại.");
         }
-        sendFriends(client);
-
         Room room = roomOf(user.username);
         if (room != null) {
             if (room.matchmaking && !room.playing && !room.postGame) updateMatchmakingCountdown(room);
@@ -1059,6 +1072,55 @@ public final class GameServer implements AutoCloseable {
         client.send(Message.of(Type.FRIEND_UPDATE).with("friends", names));
     }
 
+    private void sendFriendState(ClientHandler client, String resolvedRequestId) {
+        List<FriendInvitation> pending = new ArrayList<>();
+        if (mysqlStorage) {
+            for (var invitation : friendshipStore.pending(client.username)) {
+                UserRecord sender = user(invitation.sender());
+                pending.add(new FriendInvitation(invitation.id(), invitation.sender(), sender.avatar, invitation.sentAt()));
+            }
+        } else {
+            friendRequests.forEach((id, invitation) -> {
+                if (invitation.status.equals("PENDING") && invitation.recipient.equalsIgnoreCase(client.username)) {
+                    UserRecord sender = user(invitation.sender);
+                    pending.add(new FriendInvitation(id, invitation.sender, sender.avatar, invitation.createdAt));
+                }
+            });
+        }
+        pending.sort(Comparator.comparingLong(FriendInvitation::sentAt).thenComparing(FriendInvitation::requestId));
+        List<String> names;
+        if (mysqlStorage) names = friendshipStore.friends(client.username);
+        else {
+            names = new ArrayList<>();
+            for (UserRecord other : users.values())
+                if (friendships.containsKey(friendshipKey(client.username, other.username))) names.add(other.username);
+        }
+        Message update = Message.of(Type.FRIEND_UPDATE).with("friends", names)
+                .with("pendingInvitations", pending).with("friendSync", true);
+        if (resolvedRequestId != null && !resolvedRequestId.isBlank()) update.with("resolvedRequestId", resolvedRequestId);
+        client.send(update);
+    }
+
+    private void persistFriendRequests() {
+        Path file = stateFile.resolveSibling("friend-requests.properties");
+        Properties values = new Properties();
+        friendRequests.forEach((id, request) -> values.setProperty(id,
+                request.sender + "|" + request.recipient + "|" + request.status + "|" + request.createdAt));
+        persistProperties(file, values, "Memory Game friend requests");
+    }
+
+    private void persistProperties(Path file, Properties values, String comment) {
+        Path temporary = file.resolveSibling(file.getFileName() + ".tmp");
+        try {
+            Files.createDirectories(file.getParent());
+            try (OutputStream out = Files.newOutputStream(temporary)) { values.store(out, comment); }
+            try { Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE); }
+            catch (AtomicMoveNotSupportedException e) { Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING); }
+        } catch (IOException e) {
+            throw new IllegalStateException("Không lưu được lời mời kết bạn", e);
+        }
+    }
+
     private ClientHandler socialTarget(ClientHandler sender, String name) {
         ClientHandler target = online.get(key(name));
         if (target == null || target == sender) {
@@ -1072,54 +1134,70 @@ public final class GameServer implements AutoCloseable {
         if (target == null) return;
         if(mysqlStorage) {
             String id=friendshipStore.request(sender.username,target.username);
-            target.send(Message.of(Type.FRIEND_RECEIVED).with("from",sender.username).with("requestId",id));
+            UserRecord from=user(sender.username);
+            target.send(Message.of(Type.FRIEND_RECEIVED).with("from",sender.username).with("requestId",id)
+                    .with("avatar",from.avatar).with("sentAt",System.currentTimeMillis()));
             sender.send(Message.of(Type.FRIEND_UPDATE).with("notice","Đã gửi lời mời kết bạn đến "+target.username+"."));
             return;
         }
         String pair = friendshipKey(sender.username, target.username);
         if (friendships.containsKey(pair)) { sender.error("Hai bạn đã là bạn bè."); return; }
-        if (friendRequests.values().stream().anyMatch(r -> friendshipKey(r[0], r[1]).equals(pair))) {
+        if (friendRequests.values().stream().anyMatch(r -> r.status.equals("PENDING")
+                && friendshipKey(r.sender, r.recipient).equals(pair))) {
             sender.error("Đã có lời mời kết bạn đang chờ phản hồi."); return;
         }
         String id = UUID.randomUUID().toString();
-        friendRequests.put(id, new String[]{sender.username, target.username});
-        scheduler.schedule(() -> { synchronized (lock) { friendRequests.remove(id); } }, 2, TimeUnit.MINUTES);
-        target.send(Message.of(Type.FRIEND_RECEIVED).with("from", sender.username).with("requestId", id));
+        FriendRequestRecord record = new FriendRequestRecord(sender.username, target.username, "PENDING", System.currentTimeMillis());
+        friendRequests.put(id, record);
+        try { persistFriendRequests(); }
+        catch (RuntimeException e) { friendRequests.remove(id); sender.error("Không lưu được lời mời kết bạn. Hãy thử lại."); return; }
+        UserRecord from = user(sender.username);
+        target.send(Message.of(Type.FRIEND_RECEIVED).with("from", sender.username).with("requestId", id)
+                .with("avatar", from.avatar).with("sentAt", record.createdAt));
         sender.send(Message.of(Type.FRIEND_UPDATE).with("notice", "Đã gửi lời mời kết bạn đến " + target.username + "."));
     }
 
     private void replyFriend(ClientHandler target, String id, boolean accepted) {
         if(mysqlStorage) {
-            String from=friendshipStore.reply(target.username,id,accepted);
-            sendFriends(target);
-            ClientHandler sender=online.get(key(from));
-            if(sender!=null) {
+            FriendshipStore.Reply result=friendshipStore.reply(target.username,id,accepted);
+            sendFriendState(target, id);
+            ClientHandler sender=online.get(key(result.sender()));
+            if(sender!=null && result.changed()) {
                 sendFriends(sender);
                 sender.send(Message.of(Type.FRIEND_UPDATE).with("notice",target.username+(accepted?" đã chấp nhận lời mời kết bạn.":" đã từ chối lời mời kết bạn.")));
             }
             return;
         }
-        String[] request = friendRequests.get(id);
-        if (request == null || !request[1].equalsIgnoreCase(target.username)) {
+        FriendRequestRecord request = friendRequests.get(id);
+        if (request == null || !request.recipient.equalsIgnoreCase(target.username)) {
             target.error("Lời mời kết bạn không còn hiệu lực."); return;
         }
-        friendRequests.remove(id);
-        if (accepted) {
-            String pair = friendshipKey(request[0], request[1]);
-            friendships.setProperty(pair, "true");
-            Path file = stateFile.resolveSibling("friends.properties");
-            Path temporary = file.resolveSibling("friends.properties.tmp");
-            try {
-                Files.createDirectories(file.getParent());
-                try (OutputStream out = Files.newOutputStream(temporary)) { friendships.store(out, "Memory Game friends"); }
-                Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING);
-            } catch (IOException e) {
-                friendships.remove(pair); target.error("Không thể lưu kết bạn. Hãy thử lại."); return;
-            }
+        String desired = accepted ? "ACCEPTED" : "DECLINED";
+        if (!request.status.equals("PENDING") && !request.status.equals(desired)) {
+            target.error("Lời mời đã được xử lý khác."); return;
         }
-        ClientHandler sender = online.get(key(request[0]));
-        sendFriends(target);
-        if (sender != null) {
+        boolean changed=request.status.equals("PENDING");
+        if (changed) {
+          friendRequests.put(id, new FriendRequestRecord(request.sender, request.recipient, desired, request.createdAt));
+          try { persistFriendRequests(); }
+          catch (RuntimeException e) {
+              friendRequests.put(id, request);
+              target.error("Không thể lưu phản hồi kết bạn. Hãy thử lại."); return;
+          }
+          if (accepted) {
+              String pair=friendshipKey(request.sender,request.recipient);
+              friendships.setProperty(pair,"true");
+              try { persistProperties(stateFile.resolveSibling("friends.properties"),friendships,"Memory Game friends"); }
+              catch(RuntimeException e) {
+                  friendships.remove(pair); friendRequests.put(id,request);
+                  try { persistFriendRequests(); } catch(RuntimeException ignored) { }
+                  target.error("Không thể lưu kết bạn. Hãy thử lại."); return;
+              }
+          }
+        }
+        ClientHandler sender = online.get(key(request.sender));
+        sendFriendState(target, id);
+        if (sender != null && changed) {
             sendFriends(sender);
             sender.send(Message.of(Type.FRIEND_UPDATE).with("notice", target.username
                     + (accepted ? " đã chấp nhận lời mời kết bạn." : " đã từ chối lời mời kết bạn.")));
@@ -1718,7 +1796,6 @@ public final class GameServer implements AutoCloseable {
             String userKey = key(client.username);
             if (online.get(userKey) != client) return;
             online.remove(userKey);
-            friendRequests.values().removeIf(r -> key(r[0]).equals(userKey) || key(r[1]).equals(userKey));
             UserRecord user = user(client.username);
             if (user.status.equals("QUEUE")) {
                 queues.get(queueKey(user.queueSize, normalizeBoardSize(user.queueBoardSize), user.queueTheme)).remove(userKey);
@@ -1928,6 +2005,8 @@ public final class GameServer implements AutoCloseable {
 
     record ShopProduct(String id, String name, String description,
                                int price, String type, String color) { }
+
+    private record FriendRequestRecord(String sender, String recipient, String status, long createdAt) { }
 
     private static final class Room implements Serializable {
         @Serial private static final long serialVersionUID=1L;

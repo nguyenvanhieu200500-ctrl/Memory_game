@@ -3,6 +3,7 @@ package memorygame.client;
 import memorygame.common.AppTheme;
 
 import memorygame.common.Protocol.Message;
+import memorygame.common.Protocol.FriendInvitation;
 import memorygame.common.GameColors;
 import memorygame.common.Protocol;
 import memorygame.common.ChatPanel;
@@ -70,6 +71,8 @@ public final class GameFrame extends JFrame {
     private JDialog profileDialog;
     private String pendingPassword;
     private boolean profileRequested;
+    private boolean friendSyncPending;
+    private boolean friendStateSynchronized;
     private JLabel lobbyStats;
     private JLabel lobbyWins;
     private int currentWins;
@@ -84,6 +87,12 @@ public final class GameFrame extends JFrame {
     private JButton findMatchButton;
     private JButton cancelQueueButton;
     private final Set<String> friends = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+    private final Map<String, FriendInvitation> friendRequests = new LinkedHashMap<>();
+    private final FriendRequestNotifications friendRequestNotifications = new FriendRequestNotifications();
+    private final Set<String> friendRepliesInFlight = new HashSet<>();
+    private FriendRequestBell friendRequestBell;
+    private FriendRequestsPanel friendRequestsPanel;
+    private JDialog friendRequestsDialog;
     private WhisperHistory whisperHistory = new WhisperHistory();
     private String whisperScope = "";
     private JDialog conversationsWindow;
@@ -365,6 +374,8 @@ public final class GameFrame extends JFrame {
         onlineCountLabel.setForeground(AppTheme.MUTED);
         JPanel playerHeaderActions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 0));
         playerHeaderActions.setOpaque(false); playerHeaderActions.add(onlineCountLabel);
+        friendRequestBell = new FriendRequestBell(this::showFriendRequests);
+        playerHeaderActions.add(friendRequestBell);
         conversationsButton = new ChatNotificationButton(this::showConversations);
         playerHeaderActions.add(conversationsButton);
         playerHeader.add(playerHeaderActions, BorderLayout.EAST);
@@ -956,7 +967,9 @@ public final class GameFrame extends JFrame {
             case LOGIN_OK -> {
                 String nextScope = savedHost.toLowerCase(Locale.ROOT) + ":" + savedPort + "/" + message.string("username").toLowerCase(Locale.ROOT);
                 if (!whisperScope.equals(nextScope)) {
-                    resetWhispers(); friends.clear(); roomInvites.updateFriends(friends); whisperScope = nextScope;
+                    if(friendRequestsDialog!=null) friendRequestsDialog.dispose();
+                    resetWhispers(); friends.clear(); friendRequests.clear(); friendRepliesInFlight.clear(); friendRequestNotifications.reset();
+                    friendSyncPending=false; friendStateSynchronized=false; updateFriendRequests(false); roomInvites.updateFriends(friends); whisperScope = nextScope;
                     try {
                         whisperHistory = new WhisperHistory(java.nio.file.Path.of(System.getProperty("user.home"), ".memory-game-online", "chats"),
                                 savedHost, savedPort, message.string("username"));
@@ -1029,19 +1042,44 @@ public final class GameFrame extends JFrame {
                 } else {
                     refreshLobbyActions();
                     refreshRoomActions();
-                    showInfo(message.string("message"));
+                    if(friendSyncPending) {
+                        friendSyncPending=false;
+                        friendStateSynchronized=false;
+                        if(friendRequestsPanel!=null) friendRequestsPanel.failed("Không đồng bộ được lời mời. Hãy thử lại.");
+                        showInfo("Không tải được lời mời kết bạn từ server. Bạn có thể bấm Đồng bộ lại.");
+                    } else if(!friendRepliesInFlight.isEmpty()) {
+                        String detail=message.string("message");
+                        if(friendRequestsPanel!=null) friendRequestsPanel.failed("Không xác nhận được phản hồi. Đang đồng bộ lại danh sách.");
+                        showInfo("Phản hồi lời mời chưa được xác nhận: "+detail+" Danh sách sẽ được đồng bộ từ server.");
+                        if(!friendSyncPending) requestFriendSync();
+                    } else showInfo(message.string("message"));
                 }
             }
             case LOBBY_UPDATE -> updateLobby(message);
             case ROOM_UPDATE -> updateRoom(message);
             case INVITE_RECEIVED -> receiveInvite(message);
             case FRIEND_RECEIVED -> {
-                int choice = showActionDialog("Lời mời kết bạn", message.string("from") + " muốn kết bạn với bạn.",
-                        null, new String[]{"Chấp nhận", "Từ chối"}, new Color[]{ACCENT, MUTED}, 460, 230);
-                send(Message.of(Protocol.Type.FRIEND_REPLY).with("requestId", message.string("requestId")).with("accepted", choice == 0));
+                String id=message.string("requestId");
+                if(!id.isBlank()) {
+                    FriendInvitation invitation=new FriendInvitation(id,message.string("from"),message.string("avatar"),message.longValue("sentAt"));
+                    friendRequestNotifications.receive(invitation,friendRequests.putIfAbsent(id,invitation)==null);
+                }
+                updateFriendRequests(false);
             }
             case FRIEND_UPDATE -> {
                 if (message.get("friends") != null) { friends.clear(); friends.addAll(message.<List<String>>value("friends")); roomInvites.updateFriends(friends); lobbyList.repaint(); }
+                if(message.bool("friendSync")) {
+                    friendSyncPending=false;
+                    friendStateSynchronized=true;
+                    List<FriendInvitation> pending=message.value("pendingInvitations");
+                    Set<String> previousIds=new HashSet<>(friendRequests.keySet());
+                    friendRequests.clear();
+                    if(pending!=null) for(FriendInvitation invitation:pending) friendRequests.put(invitation.requestId(),invitation);
+                    friendRequestNotifications.sync(friendRequests.values(),previousIds);
+                    if(friendRequestsDialog!=null && friendRequestsDialog.isVisible()) friendRequestNotifications.markSeen();
+                    friendRepliesInFlight.clear();
+                    updateFriendRequests(true);
+                }
                 if (!message.string("notice").isBlank()) setBanner(lobbyNotice, message.string("notice"), INFO_BG, ACCENT);
             }
             case WHISPER_PAGE -> {
@@ -1323,9 +1361,11 @@ public final class GameFrame extends JFrame {
         if (reconnectTimer != null) reconnectTimer.stop();
         reconnecting = false;
         authenticated = false;
+        if (friendRequestsDialog != null) friendRequestsDialog.dispose();
         AUDIO.stopLobbyMusic();
         client.close();
-        resetWhispers(); friends.clear(); roomInvites.updateFriends(friends);
+        resetWhispers(); friends.clear(); friendRequests.clear(); friendRepliesInFlight.clear(); friendRequestNotifications.reset();
+        friendSyncPending=false; friendStateSynchronized=false; updateFriendRequests(false); roomInvites.updateFriends(friends);
         username = "";
         roomCode = "";
         selfStatus = "IDLE";
@@ -1553,6 +1593,52 @@ public final class GameFrame extends JFrame {
         if (conversationsButton != null) conversationsButton.setUnread(unreadMessages.total());
         if (roomInvites != null) roomInvites.setUnreadMessages(unreadMessages.total());
         if (conversationsPanel != null) conversationsPanel.update(whisperHistory.conversations());
+    }
+
+    private void updateFriendRequests(boolean synchronizedState) {
+        if(friendRequestBell!=null) friendRequestBell.setCount(friendRequestNotifications.unreadCount());
+        if(friendRequestsPanel!=null) friendRequestsPanel.update(new ArrayList<>(friendRequests.values()),synchronizedState);
+    }
+
+    private void showFriendRequests() {
+        friendRequestNotifications.markSeen();
+        updateFriendRequests(false);
+        if(friendRequestsDialog==null || !friendRequestsDialog.isDisplayable()) {
+            friendRequestsDialog=new JDialog(this,"Lời mời kết bạn",false);
+            friendRequestsPanel=new FriendRequestsPanel(this::replyFriendRequest,this::requestFriendSync);
+            friendRequestsDialog.setContentPane(friendRequestsPanel);
+            friendRequestsDialog.setSize(620,460); friendRequestsDialog.setMinimumSize(new Dimension(540,360));
+            friendRequestsDialog.setLocationRelativeTo(this);
+            friendRequestsDialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
+            friendRequestsDialog.addWindowListener(new WindowAdapter(){@Override public void windowClosed(WindowEvent e){friendRequestsPanel=null;friendRequestsDialog=null;}});
+        }
+        friendRequestsPanel.update(new ArrayList<>(friendRequests.values()),friendStateSynchronized);
+        friendRequestsDialog.setVisible(true);
+    }
+
+    private void replyFriendRequest(String id, boolean accepted) {
+        if(!friendRequests.containsKey(id) || !friendRepliesInFlight.add(id)) return;
+        if(friendRequestsPanel!=null) friendRequestsPanel.markSending(id);
+        if(client.isConnected()) send(Message.of(Protocol.Type.FRIEND_REPLY).with("requestId",id).with("accepted",accepted));
+        else {
+            friendRepliesInFlight.remove(id);
+            friendStateSynchronized=false;
+            if(friendRequestsPanel!=null) friendRequestsPanel.failed("Mất kết nối. Đang thử đồng bộ lại khi kết nối trở lại.");
+            showInfo("Không gửi được phản hồi vì đã mất kết nối. Trạng thái sẽ được đồng bộ khi kết nối lại.");
+        }
+    }
+
+    private void requestFriendSync() {
+        if(!client.isConnected()) {
+            friendSyncPending=false;
+            friendStateSynchronized=false;
+            if(friendRequestsPanel!=null) friendRequestsPanel.failed("Chưa kết nối. Hãy thử lại sau khi kết nối.");
+            return;
+        }
+        if(friendSyncPending) return;
+        friendSyncPending=true;
+        if(friendRequestsPanel!=null) friendRequestsPanel.synchronizing();
+        send(Message.of(Protocol.Type.FRIEND_SYNC_REQUEST));
     }
 
     private void showConversations() {
@@ -2168,6 +2254,8 @@ public final class GameFrame extends JFrame {
 
     private void disconnected(String reason) {
         if (!isDisplayable() || closing) return;
+        friendStateSynchronized=false; friendSyncPending=false;
+        if(friendRequestsPanel!=null) friendRequestsPanel.failed("Mất kết nối. Danh sách sẽ được đồng bộ sau khi đăng nhập lại.");
         if (profileDialog != null) profileDialog.dispose();
         profilePanel = null; profileRequested = false;
         AUDIO.stopLobbyMusic();

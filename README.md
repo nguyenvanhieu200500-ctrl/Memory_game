@@ -8,7 +8,7 @@ Game desktop Java Swing chơi qua TCP. Server quản lý trận và lưu tài kh
 - Ghép nhanh hoặc tạo phòng riêng; mời bạn, sẵn sàng và trò chuyện.
 - Bàn 4×4, 6×6, 8×8 với chủ đề Trái cây, Động vật, Đồ ăn hoặc Phương tiện.
 - Lịch sử trận, cửa hàng vật phẩm trang trí, nhạc nền và hiệu ứng.
-- Kết nối lại và phục hồi trận sau khi MySQL khởi động lại.
+- Kết nối lại và phục hồi trận khi server game khởi động lại, sử dụng trạng thái đã lưu trong MySQL.
 
 ## Yêu cầu môi trường
 
@@ -63,11 +63,12 @@ Mở Docker Desktop. Nếu MySQL container đang dừng, chạy `docker start me
 - Phòng riêng cần ít nhất 2 người; tất cả người trong phòng, kể cả chủ phòng, phải online và sẵn sàng. Chủ phòng bấm **Bắt đầu**; không cần chờ phòng đầy. Trận bắt đầu sau đếm ngược 3 giây.
 - Mỗi lượt có 15 giây. Chọn hai thẻ: ghép đúng được 1 điểm, giữ cặp và đi tiếp; ghép sai được server giữ lật khoảng **1,31 giây** rồi úp và chuyển lượt.
 - Bàn 4×4 có 8 cặp, 6×6 có 18 cặp, 8×8 có 32 cặp. Hạng được tính theo số cặp; người đồng điểm cùng hạng. Thưởng là 50 xu cho người thắng và 10 xu cho người còn lại; vật phẩm chỉ trang trí.
-- Sau trận có 30 giây để chọn chơi lại. Khi phục hồi trận sau khi MySQL khởi động lại, người chơi phải xác nhận tiếp tục trong 120 giây.
+- Sau trận có 30 giây để chọn chơi lại. Khi server game khởi động lại và sử dụng trạng thái đã lưu trong MySQL để phục hồi trận, người chơi phải xác nhận tiếp tục trong 120 giây.
 
 ## Tài liệu chi tiết
 
 - [Hướng dẫn sử dụng](docs/usage.md): hồ sơ, phòng, mời bạn, chat, cửa hàng và giám sát server.
 - [Database và vận hành](docs/database.md): cài đặt, migration, phân quyền, lưu dữ liệu và kết quả kiểm chứng.
+- [Tạo và chạy bản phát hành](docs/release.md): đóng gói riêng client/server từ source hiện tại.
 - [Kịch bản demo hai máy](docs/demo-two-machines.md) và [ghi nhận chuẩn bị demo](docs/demo-verification-20261027.txt).
 - [Nguồn và định dạng nhạc nền](src/memorygame/client/audio/README.md).

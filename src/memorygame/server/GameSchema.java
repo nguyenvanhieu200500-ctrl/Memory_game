@@ -167,15 +167,6 @@ final class GameSchema {
         ensureForeignKey(c, "match_history", "username", "users", "fk_history_user", " ON DELETE CASCADE");
         for (String[] check : CHECKS) ensureCheck(c, check[0], check[1], check[2]);
         importHistory(c);
-        // Existing server messages are the only SQL source; keep the source table intact.
-        try (Statement statement=c.createStatement()) {
-            statement.executeUpdate("""
-                INSERT INTO direct_messages(sender,recipient,message_text,sent_at,legacy_key)
-                SELECT sender,recipient,message_text,sent_at,CONCAT('private_messages:',id)
-                FROM private_messages old WHERE NOT EXISTS
-                (SELECT 1 FROM direct_messages d WHERE d.legacy_key=CONCAT('private_messages:',old.id))
-                """);
-        }
     }
     static final String[][] CHECKS = {
         {"users", "ck_users_balances", "coins IS NOT NULL AND coins >= 0 AND rating IS NOT NULL AND rating >= 0"},

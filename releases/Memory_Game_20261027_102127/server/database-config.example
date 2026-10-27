@@ -1,0 +1,5 @@
+# Replace sample values in the server terminal before running a launcher.
+# Java does not automatically read this file.
+MEMORY_GAME_DB_URL=jdbc:mysql://127.0.0.1:3307/memory_game?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+MEMORY_GAME_DB_USER=REPLACE_WITH_RUNTIME_OR_MIGRATION_USER
+MEMORY_GAME_DB_PASSWORD=REPLACE_WITH_SECRET

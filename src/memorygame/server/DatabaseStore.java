@@ -531,7 +531,6 @@ final class DatabaseStore {
                                     ELSE ROUND(wins * 100.0 / games, 2) END AS win_rate
                         FROM users
                         """);
-                statement.executeUpdate(WhisperStore.SCHEMA);
                 GameSchema.upgrade(connection);
                 return;
             } catch (Exception e) {
