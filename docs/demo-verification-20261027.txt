@@ -1,0 +1,91 @@
+Verification run: demo readiness, 2026-10-27, Asia/Ho_Chi_Minh
+Java 17.0.18; macOS arm64; MySQL 8.4.11; Connector/J 26.7.0
+All database cases used disposable game_test_* schemas.
+
+Initial MySQL suite (before expanded assertions)
+PASSWORD_HASHES_OK randomSalt unicode invalidFormats legacy
+Running memorygame.server.GameDatabaseTest
+DB_INTEGRITY_OK checks PK FK retiredItems staleRAM historyFallback interruptionRollback crashRecovery
+GAME_DATABASE_OK migration catalog purchaseConcurrency rollback idempotentRewards replay draw forfeit history foreignKeys
+Running memorygame.server.PersistenceExtensionsTest
+PERSISTENCE_EXTENSIONS_OK friendships migration chatPagination privacy receipts journalRollback duplicateRewards snapshotCAS
+Running memorygame.test.PasswordMigrationTest
+PASSWORD_MIGRATION_OK oldLogin wrongPassword failedUpgrade preservesBalance modernLogin passwordChange restart
+Running memorygame.server.RuntimePrivilegesTest
+PROFILE_OK authentication validation passwordChange avatarUpdate persistence reset statsUnchanged
+RUNTIME_PRIVILEGES_OK appWithoutDDL migrationsSeparate disposableAccountRemoved
+Running memorygame.server.SchemaParityTest
+SCHEMA_PARITY_OK columns indexes foreignKeys checks SQLBootstrap runtimeUpgrade repeatedSQLMigration
+Running memorygame.server.CommitDisconnectTest
+COMMIT_DISCONNECT_OK tcpDroppedCommitACK=5 purchase start snapshot settlement retry noDoubleDebit noDoubleReward pendingStartReconciliation
+Running memorygame.test.CrashPhasesTest
+CRASH_PHASE_OK FIRST
+CRASH_PHASE_OK WRONG_PAIR
+CRASH_PHASE_OK TURN
+CRASH_PHASE_OK SETTLING
+CRASH_PHASES_OK hardKill firstCard wrongPair turnChange settling exactBoard scores activePlayers timers hiddenValues onceOnlyRewards
+Running memorygame.test.WhisperSyncTest
+WHISPER_SYNC_OK delivery restart freshClient privacy retention unicode
+Running memorygame.test.GamePersistenceProtocolTest
+FULL_GAME_REPLAY_OK room=LCVTUF pairs=8 scoreTotal=8 coinRewards=50/10 shopCatalog=6
+GAME_PROTOCOL_OK complete replay forfeit history shop
+
+Expanded MySQL suite (after changes)
+PASSWORD_HASHES_OK randomSalt unicode invalidFormats legacy
+Running memorygame.server.CommitDisconnectTest
+COMMIT_DISCONNECT_OK tcpDroppedCommitACK=6 purchase start snapshot settlement retry noDoubleDebit noDoubleReward pendingStartReconciliation unavailableBeforePurchase unknownPurchaseCommit
+Running memorygame.server.RuntimePrivilegesTest
+PROFILE_OK authentication validation passwordChange avatarUpdate persistence reset statsUnchanged
+SOCIAL_OK consent rejection forgedReply duplicate self offline privacy identity validation persistence
+WHISPER_SYNC_OK delivery restart freshClient privacy retention unicode
+FULL_GAME_REPLAY_OK room=U6FBJM pairs=8 scoreTotal=8 coinRewards=50/10 shopCatalog=6
+GAME_PROTOCOL_OK complete replay forfeit history shop restartWalletRatingItemsHistory
+RUNTIME_PRIVILEGES_OK appWithoutDDL migrationsSeparate disposableAccountRemoved
+Running memorygame.server.PreviousGameSchemaTest
+DB_INTEGRITY_OK checks PK FK retiredItems staleRAM historyFallback interruptionRollback crashRecovery
+PREVIOUS_GAME_SCHEMA_OK additiveUpgrade preservedResults backfilledTime
+Running memorygame.server.GameSchemaInitTest
+DB_INTEGRITY_OK checks PK FK retiredItems staleRAM historyFallback interruptionRollback crashRecovery
+GAME_SCHEMA_INIT_OK SQL bootstrap automaticUpgrade relations catalog
+Running memorygame.test.GameRecoveryTest
+GAME_RECOVERY_OK identity hiddenBoard firstCard wrongPair matchedPair chat votes pausedActions completion rewards
+Running memorygame.test.GameCrashRecoveryTest
+GAME_CRASH_RECOVERY_OK hardKill acknowledgedCard databaseLock corruptSnapshot noRewards
+Running memorygame.test.SnapshotFailureTest
+SNAPSHOT_FAILURE_OK cardRollback pause settlementRollback restartSettling atomicRewards
+Running memorygame.test.RecoveryWaitTest
+RECOVERY_WAIT_OK real120Seconds deadlineSurvivesRestart missingPlayerForfeit atomicSettlement
+Running memorygame.test.ServerInterruptionTest
+SERVER_INTERRUPTION_OK gracefulClose departedParticipant repeatedClose crashRecovery noRewards
+
+File regression suite (after UI/audio fixes)
+SERVER_MONITOR_VIEW_OK liveData selectedRoom updates removal emptyState
+HISTORY_PANEL_OK backendParsing signedRating legacyUnknown totals empty
+RANKING_PANEL_OK backendRanks winRate self empty
+CARD_THEMES_OK fourImageThemes uniquePictures renderedFaces allBoardSizes
+CREATE_ROOM_PANEL_OK validation options payload
+ROOM_INVITE_PANEL_OK friendsOnly presence capacity membership whisperOnly plusClick keyboard history reset
+INVITATION_PANEL_OK accept decline silentExpiry oneShot
+CREATE_AND_INVITE_OK recipientValidation realRoom metadata accept
+INVITATION_FLOW_OK metadata accept decline silentExpiry lateReplyRejected
+ROOM_SETTINGS_OK validation capacity join invite gameStart reconnect
+COMBO_CONTRAST_OK candyGarden purpleArrow semanticColors playerColors
+SHOP_EFFECTS_OK classic ocean violet gold memoryTitle championTitle
+CHAT_PANEL_OK enter button validation plainText disabled cleared readOnlyMonitor
+WHISPER_HISTORY_OK persistence unicode accountServerIsolation recency retention mouse keyboard empty
+UNREAD_MESSAGES_OK incomingOnly focusedRead perPeer total reset visibleBadge
+STREAMING_MUSIC_OK packaged300Seconds fullPCM partialWrites drain loop stop restart close
+CHAT_OK twoWay authoritativeSender roomIsolation validation boundedHistory reconnect monitor
+SOCIAL_OK consent rejection forgedReply duplicate self offline privacy identity validation persistence
+SMOKE_TEST_OK room=T29R2Y privateCountdown=3s firstCard=1
+SMOKE_TEST_OK room=YHDXNR privateCountdown=3s firstCard=9
+SMOKE_TEST_OK room=L97MBS privateCountdown=3s firstCard=2
+THEME_QUEUES_OK isolatedThemes isolatedPlayerCounts cancelRejoin invalidTheme sharedGameTheme
+MATCHMAKING_RULES_OK serverOwned readyCountdown=3s isolatedBoards=4x4,6x6 wrongTurnRejected duplicateRejected
+FULL_GAME_REPLAY_OK room=VC3PKW pairs=8 scoreTotal=8 coinRewards=50/10 shopCatalog=6
+ALL_TESTS_PASSED
+
+Startup and demo SQL after isolating data directory
+DEMO_SQL_OK all documented queries executed in disposable schema
+STARTUP_SCRIPTS_OK migrationTwice isolatedDataDirectory serverListening
+Initial startup against an empty schema with checkout legacy files failed with a friendship FK mismatch; files were preserved.

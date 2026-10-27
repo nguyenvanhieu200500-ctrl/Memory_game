@@ -15,9 +15,12 @@ public final class RuntimePrivilegesTest {
                 try(Connection runtime=DriverManager.getConnection(System.getenv("MEMORY_GAME_DB_URL"),name,secret);Statement statement=runtime.createStatement()) {
                     try{statement.execute("ALTER TABLE users ADD COLUMN forbidden_test INT");throw new AssertionError("Runtime DDL allowed");}catch(SQLException expected){if(expected.getErrorCode()!=1142)throw expected;}
                 }
-                ProcessBuilder child=new ProcessBuilder(System.getProperty("java.home")+"/bin/java","-Djava.awt.headless=true","-cp",System.getProperty("java.class.path"),"memorygame.test.ProfileTest");
-                child.environment().put("MEMORY_GAME_DB_USER",name);child.environment().put("MEMORY_GAME_DB_PASSWORD",secret);child.environment().put("MEMORY_GAME_DB_MIGRATE","false");
-                if(child.inheritIO().start().waitFor()!=0)throw new AssertionError("Runtime needs DDL privileges");
+                for(String test:List.of("memorygame.test.ProfileTest", "memorygame.test.SocialTest",
+                        "memorygame.test.WhisperSyncTest", "memorygame.test.GamePersistenceProtocolTest")) {
+                    ProcessBuilder child=new ProcessBuilder(System.getProperty("java.home")+"/bin/java","-Djava.awt.headless=true","-cp",System.getProperty("java.class.path"),test);
+                    child.environment().put("MEMORY_GAME_DB_USER",name);child.environment().put("MEMORY_GAME_DB_PASSWORD",secret);child.environment().put("MEMORY_GAME_DB_MIGRATE","false");
+                    if(child.inheritIO().start().waitFor()!=0)throw new AssertionError("Runtime failed: "+test);
+                }
             }finally{s.execute("DROP USER '"+name+"'@'%'");}
         }
         System.out.println("RUNTIME_PRIVILEGES_OK appWithoutDDL migrationsSeparate disposableAccountRemoved");

@@ -14,7 +14,9 @@ public final class ServerMain {
             if (arg.equals("--headless")) headless = true;
             else port = Integer.parseInt(arg);
         }
-        GameServer server = new GameServer(port, Path.of("data"));
+        String dataDirectory = System.getenv("MEMORY_GAME_DATA_DIR");
+        GameServer server = new GameServer(port, Path.of(
+                dataDirectory == null || dataDirectory.isBlank() ? "data" : dataDirectory));
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try { server.close(); } catch (Exception ignored) {}
         }));

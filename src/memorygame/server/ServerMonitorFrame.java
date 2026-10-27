@@ -596,8 +596,7 @@ public final class ServerMonitorFrame extends JFrame {
                 paintCardImage(p, card.value(), x + 7, y + 7, w - 14, h - strip - 10);
                 p.setColor(GameColors.textOn(ownerColor));
                 p.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 11));
-                String label = code + " · " + (card.owner() == null ? "" : card.owner());
-                if (p.getFontMetrics().stringWidth(label) > w - 14) label = code;
+                String label = code;
                 center(p, label, x + w / 2, y + h - strip + (strip - p.getFontMetrics().getHeight()) / 2
                         + p.getFontMetrics().getAscent() - 2);
             }

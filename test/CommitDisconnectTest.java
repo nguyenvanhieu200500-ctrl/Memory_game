@@ -53,11 +53,12 @@ public final class CommitDisconnectTest {
                 Process process=child.start();
                 try(var input=new BufferedReader(new InputStreamReader(process.getInputStream()));var output=new PrintWriter(process.getOutputStream(),true)) {
                     String line;while((line=input.readLine())!=null) {
-                        if(line.equals("ARM")||line.equals("ARM_BLOCK")){proxy.blockAfterDrop.set(line.equals("ARM_BLOCK"));proxy.armed.set(true);output.println("READY");}else System.out.println(line);
+                        if(line.equals("REJECT")){proxy.rejectFresh.set(1);output.println("READY");}
+                        else if(line.equals("ARM")||line.equals("ARM_BLOCK")){proxy.blockAfterDrop.set(line.equals("ARM_BLOCK"));proxy.armed.set(true);output.println("READY");}else System.out.println(line);
                     }
                 }
-                check(process.waitFor()==0,"Proxy child failed");check(proxy.dropped.get()==5,"Must drop five real COMMIT OK packets");
-                System.out.println("COMMIT_DISCONNECT_OK tcpDroppedCommitACK=5 purchase start snapshot settlement retry noDoubleDebit noDoubleReward pendingStartReconciliation");
+                check(process.waitFor()==0,"Proxy child failed");check(proxy.dropped.get()==6,"Must drop six real COMMIT OK packets");
+                System.out.println("COMMIT_DISCONNECT_OK tcpDroppedCommitACK=6 purchase start snapshot settlement retry noDoubleDebit noDoubleReward pendingStartReconciliation unavailableBeforePurchase unknownPurchaseCommit");
             }
             return;
         }
@@ -79,6 +80,22 @@ public final class CommitDisconnectTest {
             check(number(c,"SELECT SUM(games) FROM users")==2,"Double statistics");
             check(number(c,"SELECT MIN(coins) FROM users")>=0,"Negative coins");
             check(number(c,"SELECT coins FROM users WHERE username='commit_a'")==550-number(c,"SELECT price FROM products WHERE product_id='theme_ocean'"),"Double debit/reward");
+        }
+        System.out.println("REJECT");System.out.flush();check("READY".equals(control.readLine()),"No proxy control");
+        try { db.purchase("commit_a","theme_gold");throw new AssertionError("Unavailable DB reported purchase success"); }
+        catch(IllegalStateException expected) { }
+        try(Connection c=db.open()) {
+            check(number(c,"SELECT COUNT(*) FROM user_items WHERE product_id='theme_gold'")==0,"Failed connection granted item");
+            check(number(c,"SELECT COUNT(*) FROM coin_transactions")==3,"Failed connection changed journal");
+        }
+        System.out.println("ARM_BLOCK");System.out.flush();check("READY".equals(control.readLine()),"No proxy control");
+        try { db.purchase("commit_a","theme_gold");throw new AssertionError("Unknown commit reported success"); }
+        catch(IllegalStateException expected) { check(DatabaseStore.unknownCommit(expected),"Must identify unknown commit"); }
+        check(!db.purchase("commit_a","theme_gold").isEmpty(),"Retry must recognize already committed purchase");
+        try(Connection c=db.open()) {
+            check(number(c,"SELECT COUNT(*) FROM coin_transactions")==4,"Unknown commit retry double debit");
+            check(number(c,"SELECT COUNT(*) FROM user_items WHERE product_id='theme_gold'")==1,"Unknown commit retry duplicate item");
+            check(number(c,"SELECT coins FROM users WHERE username='commit_a'")==550-number(c,"SELECT SUM(price) FROM products WHERE product_id IN ('theme_ocean','theme_gold')"),"Unknown commit changed balance twice");
         }
         int port;try(ServerSocket free=new ServerSocket(0)){port=free.getLocalPort();}
         GameServer server=new GameServer(port,java.nio.file.Files.createTempDirectory("uncertain-start-"));

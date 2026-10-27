@@ -25,7 +25,7 @@
 - Ví xu được quản lý tại Server: người thắng nhận 50 xu, người thua nhận 10 xu sau mỗi ván.
 - Cửa hàng dùng xu mua/trang bị mặt sau thẻ và danh hiệu hồ sơ; vật phẩm chỉ mang tính trang trí, không tạo lợi thế thi đấu.
 - Mỗi mặt thẻ có bề mặt giả lập 3D và hiệu ứng riêng: dập chìm Cổ điển, sóng Đại dương, hạt neon hoặc ánh kim Hoàng kim.
-- Nhạc nền sảnh: “Call of Silence” — bản nhạc không lời dài khoảng 1 giờ 38 giây (https://www.youtube.com/watch?v=ow_rqR-tmDk), phát toàn bộ từ đầu đến cuối rồi lặp lại; đọc WAV theo luồng với bộ đệm cố định; có nút bật/tắt riêng tại Lobby. Hiệu ứng thao tác, lật thẻ, ghép đúng/sai được tạo trực tiếp trong ứng dụng.
+- Nhạc nền sảnh: “Call of Silence” — dùng 5 phút đầu của bản nhạc không lời (https://www.youtube.com/watch?v=ow_rqR-tmDk), phát hết đoạn rồi lặp lại; WAV PCM 16-bit stereo 22050 Hz, đọc theo luồng với bộ đệm cố định; có nút bật/tắt riêng tại Lobby. Hiệu ứng thao tác, lật thẻ, ghép đúng/sai được tạo trực tiếp trong ứng dụng.
 
 Trong trận, mở tab **Chat phòng** cạnh bàn chơi, nhập tin nhắn rồi nhấn Enter hoặc **Gửi**.
 Tin nhắn hiển thị cho tất cả người chơi cùng phòng và trong phần **Chat phòng · Theo dõi**
@@ -41,7 +41,7 @@ Cần biên dịch lại và khởi động lại cả server lẫn client sau k
 ## Chạy trên Windows
 
 1. Mở Docker Desktop.
-2. Chạy `setup-database.bat` một lần để tạo MySQL và tải JDBC driver.
+2. Cấu hình `MYSQL_ROOT_PASSWORD` và `MEMORY_GAME_DB_PASSWORD` theo [hướng dẫn database](docs/database.md#áp-dụng), rồi chạy `setup-database.bat` để tạo MySQL và tải JDBC driver.
 3. Cấu hình biến môi trường database theo [hướng dẫn migration](docs/database.md#áp-dụng), rồi chạy `migrate-database.bat` để biên dịch và nâng cấp schema trước khi chạy server.
 4. Chạy `run-server.bat` và giữ cửa sổ server mở.
 5. Chạy `run-client.bat` từ 2 đến 4 lần.

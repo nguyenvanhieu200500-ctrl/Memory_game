@@ -1908,7 +1908,7 @@ public final class GameFrame extends JFrame {
         setCardRing(index, ownerColor);
         if (cards[index] instanceof CardButton card) {
             int playerNumber = new ArrayList<>(playerColors.keySet()).indexOf(owner) + 1;
-            card.ownerLabel = playerNumber > 0 ? "P" + playerNumber + " · " + owner : "✓";
+            card.ownerLabel = playerNumber > 0 ? "P" + playerNumber : "✓";
             card.setToolTipText("Hàng " + (index / boardSize + 1) + ", cột " + (index % boardSize + 1)
                     + " · Đã ghép bởi: " + (owner == null ? "Không xác định" : owner));
             card.repaint();
@@ -2850,7 +2850,6 @@ public final class GameFrame extends JFrame {
                     g.setFont(new Font(Font.SANS_SERIF, Font.BOLD, Math.max(10, Math.min(12, badgeHeight - 3))));
                     FontMetrics metrics = g.getFontMetrics();
                     String label = ownerLabel;
-                    if (metrics.stringWidth(label) > width - 16) label = ownerLabel.split(" · ", 2)[0];
                     g.drawString(label, x + (width - metrics.stringWidth(label)) / 2,
                             badgeY + (badgeHeight - metrics.getHeight()) / 2 + metrics.getAscent());
                 }
@@ -2860,6 +2859,11 @@ public final class GameFrame extends JFrame {
 
         private void paintClassicEffect(Graphics2D g, int x, int y, int width, int height) {
             memorygame.common.CardArtwork.paintBack(g, x, y, width, height);
+            // Keep the shared artwork, with a moving highlight for the equipped/preview card.
+            int shineX = x - width + (int) Math.round(width * 3 * themePhase);
+            g.setPaint(new GradientPaint(shineX, y, new Color(255, 235, 190, 0),
+                    shineX + width * 0.5f, y + height, new Color(255, 235, 190, 65), true));
+            g.fillRect(x, y, width, height);
         }
 
         private void paintOceanEffect(Graphics2D g, int x, int y, int width, int height) {
