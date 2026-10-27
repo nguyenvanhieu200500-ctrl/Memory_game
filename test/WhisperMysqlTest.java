@@ -20,7 +20,7 @@ public final class WhisperMysqlTest {
                 child.environment().put("MEMORY_GAME_DB_USER", "root");
                 child.environment().put("MEMORY_GAME_DB_PASSWORD", "memory_game_root_123");
                 if (child.inheritIO().start().waitFor() != 0) throw new AssertionError("MySQL integration failed");
-                try (ResultSet rows = sql.executeQuery("SELECT COUNT(*) FROM " + schema + ".private_messages")) {
+                try (ResultSet rows = sql.executeQuery("SELECT COUNT(*) FROM " + schema + ".direct_messages")) {
                     rows.next(); if (rows.getInt(1) != 103) throw new AssertionError("SQL persistence count");
                 }
             } finally { sql.executeUpdate("DROP DATABASE " + schema); }

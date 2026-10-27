@@ -37,6 +37,17 @@ public final class WhisperSyncTest {
             if (first.size() != 100 || !first.equals(second) || !first.get(0).text().equals("Xin chào 🌟 3"))
                 throw new AssertionError("restart/fresh-client/retention");
             if (!login(outsider, "sync_c", false).isEmpty()) throw new AssertionError("privacy after restart");
+            long before=0;int count=0;
+            do {
+                a.send(Message.of(Type.WHISPER_PAGE_REQUEST).with("username","sync_b").with("before",before));
+                Message page=a.await(Type.WHISPER_PAGE);
+                count+=page.<List<ChatEntry>>value("messages").size();before=page.longValue("before");
+                a.send(Message.of(Type.WHISPER_READ).with("username","sync_b").with("through",page.longValue("newest")));
+                if(!page.bool("hasMore"))break;
+            }while(count<200);
+            if(count!=103)throw new AssertionError("Wire pagination");
+            outsider.send(Message.of(Type.WHISPER_PAGE_REQUEST).with("username","sync_b").with("sender","sync_a"));
+            if(!outsider.await(Type.WHISPER_PAGE).<List<ChatEntry>>value("messages").isEmpty())throw new AssertionError("Forged history owner");
         } finally { server.close(); thread.join(2000); }
         System.out.println("WHISPER_SYNC_OK delivery restart freshClient privacy retention unicode");
     }

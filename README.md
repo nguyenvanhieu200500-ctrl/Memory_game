@@ -18,7 +18,7 @@
 - Lượt 15 giây; đúng được +1 và chơi tiếp, sai hiện 2 giây rồi chuyển lượt.
 - Hết lượt tự động, phát hiện 60 giây không hoạt động, bỏ cuộc và giữ chỗ mất kết nối 30 giây.
 - Client tự kết nối lại tối đa 10 lần khi mạng chập chờn và khôi phục đúng phòng/trận trong thời hạn giữ chỗ.
-- Khi server MySQL khởi động lại, ván đang chơi được khôi phục và tạm dừng; mọi người còn tham gia bấm **Xác nhận tiếp tục** để chơi tiếp với bàn, điểm, lượt và thời gian còn lại đã lưu.
+- Khi server MySQL khởi động lại, ván đang chơi được khôi phục và tạm dừng; mọi người còn tham gia bấm **Xác nhận tiếp tục** để chơi tiếp với bàn, điểm, lượt và thời gian còn lại đã lưu. Thời hạn chờ là 120 giây kể từ lần phục hồi đầu tiên; người chưa kết nối và xác nhận khi hết hạn được tính bỏ cuộc. Restart lần nữa không gia hạn chờ.
 - Sau trận, người chơi có 30 giây chọn Chơi lại; chỉ những người đồng ý mới được giữ trong phòng mới.
 - Khi hết trận, hệ thống hiển thị bước tính điểm ngắn rồi xếp kết quả theo số cặp giảm dần; người bằng điểm nhận cùng hạng (`1, 2, 2, 3`).
 - Tài khoản, xu, thắng/thua, điểm xếp hạng, vật phẩm và lịch sử được lưu trong MySQL chạy bằng Docker.
@@ -94,12 +94,15 @@ Các đối tượng chính:
 - `match_results`: kết quả từng người trong trận, liên kết tới `matches` và `users`.
 - `match_history`: giữ dữ liệu lịch sử cũ; lịch sử mới đọc từ `matches` và `match_results`.
 - `leaderboard`: view có sẵn cho xếp hạng và tỷ lệ thắng.
-- `private_messages`: tin nhắn riêng gồm người gửi, người nhận, nội dung và thời gian; server tự tạo bảng khi khởi động.
+- `friendships`: lời mời và quan hệ bạn bè, chống tự kết bạn và trùng cặp.
+- `direct_messages`: tin nhắn riêng, thời gian gửi/đã đọc và chỉ mục phân trang.
+- `coin_transactions`: sổ thay đổi xu với mã nghiệp vụ duy nhất; không dựng lịch sử giao dịch cũ.
+- `private_messages`: nguồn tin nhắn cũ được giữ nguyên sau migration.
 
-Tin nhắn riêng mới được lưu trên server trước khi chuyển tới người nhận. Sau khi đăng nhập, client tự đồng bộ tối đa 100 tin gần nhất mỗi cuộc trò chuyện (không đánh dấu tin lịch sử là tin chưa đọc). MySQL giữ các bản ghi tin nhắn; giới hạn 100 áp dụng cho phần lịch sử tải về. Cần cập nhật và khởi động lại cả server lẫn client. Lịch sử cũ chỉ có trong file trên máy client vẫn được giữ tại máy đó, không tự tải lên server. Chat trong trận vẫn lưu tạm trong bộ nhớ phòng. Chế độ `MEMORY_GAME_STORAGE=file` lưu tin riêng trong `data/private-messages.bin`.
+Tin nhắn riêng mới được lưu trên server trước khi chuyển tới người nhận. Sau khi đăng nhập, client tự đồng bộ tối đa 100 tin gần nhất mỗi cuộc trò chuyện (không đánh dấu tin lịch sử là tin chưa đọc). MySQL giữ các bản ghi tin nhắn; giới hạn 100 áp dụng cho phần lịch sử đồng bộ ban đầu. Nút **Tin cũ hơn** tải từng trang 50 tin từ database; **Mới nhất** quay về trang gần nhất. Trạng thái đã đọc được ghi khi mở cửa sổ trò chuyện. Cần cập nhật và khởi động lại cả server lẫn client. Lịch sử cũ chỉ có trong file trên máy client vẫn được giữ tại máy đó, không tự tải lên server. Chat trong trận nằm trong snapshot của phòng ở chế độ MySQL. Chế độ `MEMORY_GAME_STORAGE=file` lưu tin riêng trong `data/private-messages.bin`.
 
 Dữ liệu MySQL nằm trong Docker volume `memory-game-mysql-data` và vẫn còn sau khi container dừng.
-Ở lần chạy MySQL đầu tiên, Server tự nhập dữ liệu cũ từ `data/state.bin` nếu database chưa có tài khoản.
+Server nhập các tài khoản còn thiếu từ `data/state.bin`, giữ nguyên tài khoản đã có trong database. Bạn bè từ `friends.properties` và tin nhắn từ `private-messages.bin` chỉ được nhập khi nguồn thực sự tồn tại; giữ nguyên tệp nguồn và không nhập trùng khi chạy lại.
 MySQL của game dùng cổng `3307` trên máy chủ để tránh xung đột với dịch vụ đang dùng cổng `3306`.
 
 Chi tiết nâng cấp, transaction và kiểm thử database: [docs/database.md](docs/database.md).
@@ -140,7 +143,7 @@ Người được mời nhận bảng nhỏ hiển thị người mời, tên/m�
 
 - Bấm vào một người chơi khác để mở hai mục **Kết bạn** và **Thì thầm**.
 - Nút **+** bên phải mỗi dòng gửi lời mời vào phòng khi cả hai người đang rảnh.
-- Kết bạn cần người nhận chấp nhận; lời mời hết hạn sau 2 phút. Danh sách bạn bè được lưu trong `friends.properties` cạnh `state.bin` trên máy chủ (cả chế độ MySQL và tệp).
+- Kết bạn cần người nhận chấp nhận; lời mời hết hạn sau 2 phút. Ở chế độ MySQL, lời mời và bạn bè được lưu trong `friendships`; chế độ tệp vẫn dùng `friends.properties`. Lời mời còn hạn được gửi lại khi người nhận đăng nhập.
 - Thì thầm chỉ gửi đến người nhận và người gửi, tối đa 300 ký tự; lịch sử giữ tối đa 100 tin gần nhất mỗi cuộc trò chuyện trong `.memory-game-online/chats` tại thư mục người dùng trên máy client, tách riêng theo máy chủ và tài khoản. Bấm biểu tượng trò chuyện ở góc danh sách người online để xem những người đã nhắn tin và mở lại cuộc trò chuyện. Tin nhắn mới được lưu trên server và đồng bộ khi đăng nhập trên máy khác; lịch sử cũ chỉ có trên client vẫn giữ tại máy đó.
 - Biên dịch và khởi động lại cả server lẫn client để sử dụng các thông điệp kết bạn/thì thầm mới.
 

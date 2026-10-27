@@ -10,6 +10,11 @@ erDiagram
     products ||--o{ user_items : catalog
     users ||--o{ match_results : earns
     matches ||--o{ match_results : contains
+    matches ||--o| match_snapshots : resumes
+    users ||--o{ friendships : participates
+    users ||--o{ direct_messages : participates
+    users ||--o{ coin_transactions : owns
+    matches |o--o{ coin_transactions : rewards
 ```
 
 - `products`: mã, tên, mô tả, giá, loại (`THEME`/`TITLE`), màu, trạng thái bán và thứ tự hiển thị. Sáu sản phẩm hiện có được thêm nếu thiếu; khởi động lại không ghi đè giá/tên do quản trị viên sửa. Vật phẩm cũ không có trong danh mục được giữ dưới loại `LEGACY`, không bán. Các hiệu ứng hình ảnh vẫn do client hỗ trợ theo mã vật phẩm; thêm mã mới không tự tạo hiệu ứng mới.
@@ -21,7 +26,7 @@ erDiagram
 
 `match_history` được giữ nguyên làm nguồn lưu trữ cũ. Nâng cấp chép từng dòng sang mã `legacy-<id>` với trạng thái `LEGACY`, giữ nguyên nội dung và thứ tự. Không thể khôi phục mã trận, đối thủ, bàn hoặc chủ đề từ chuỗi lịch sử cũ một cách chắc chắn, nên mỗi dòng cũ được lưu độc lập; các trường cấu trúc chưa biết là NULL. Trận đã lưu ở phiên bản trước nhưng thiếu chủ đề được đánh dấu `UNKNOWN`, không đoán hình ảnh đã dùng. Quá trình nhập không cộng lại thưởng hoặc thống kê. Chạy nâng cấp lại không tạo bản sao trùng.
 
-Nếu nhập tài khoản từ `data/state.bin` vào database trống, tài khoản, vật phẩm và lịch sử được ghi trong cùng transaction. Luồng file dành cho kiểm thử vẫn hoạt động; ba bảng mới áp dụng cho chế độ MySQL.
+Nếu nhập tài khoản còn thiếu từ `data/state.bin`, tài khoản, vật phẩm và lịch sử được ghi trong cùng transaction. Luồng file dành cho kiểm thử vẫn hoạt động; các bảng database áp dụng cho chế độ MySQL.
 
 ## Transaction và đồng bộ
 
@@ -33,9 +38,9 @@ Khi kết thúc, server giữ nguyên thuật toán xếp hạng/thưởng cũ v
 
 Trong chế độ MySQL, `saveState()` không ghi snapshot RAM. Đăng ký/nhập tài khoản chỉ chèn tài khoản chưa có; đổi mật khẩu, avatar và trang bị cập nhật đúng trường của đúng tài khoản. Mật khẩu dùng điều kiện hash cũ; trang bị kiểm tra quyền sở hữu trong database. Snapshot cũ không thể ghi đè ví, thống kê, mật khẩu, avatar, trang bị hoặc khôi phục vật phẩm đã bị thu hồi. Cập nhật giao diện lấy lại số liệu đã commit. Lịch sử đọc từ `matches JOIN match_results` và đọc thêm trực tiếp `match_history` cho các dòng chưa được chuyển đổi, loại trùng theo `legacy_history_id`, tối đa 50 kết quả mới nhất. Trường `recorded_at` và chỉ mục `(username, recorded_at DESC, match_id)` phục vụ lịch sử theo người và thời gian; bảng cũ giữ chỉ mục `(username, played_at DESC)`.
 
-Ván đang chơi được lưu trong `match_snapshots` (phiên bản, checksum SHA-256, số lần ghi và thời gian ghi). Snapshot giữ bàn bí mật, thẻ đã lật/ghép, chủ cặp, điểm, người bỏ cuộc, chat, giai đoạn xử lý và thời gian còn lại. Server ghi trước khi công bố thao tác đã nhận, ghi định kỳ mỗi giây để cập nhật đồng hồ và ghi khi dừng bình thường. Thời gian server ngừng chạy không trừ vào lượt. Chế độ lưu file không hỗ trợ khôi phục ván.
+Ván đang chơi được lưu trong `match_snapshots` (phiên bản, checksum SHA-256, revision tăng đơn điệu và thời gian ghi). Snapshot giữ bàn bí mật, thẻ đã lật/ghép, chủ cặp, điểm, người bỏ cuộc, chat, giai đoạn xử lý và thời gian còn lại. Cập nhật snapshot dùng điều kiện revision trước đó; bản ghi cũ bị từ chối thay vì ghi đè. Server ghi trước khi công bố thao tác đã nhận, ghi định kỳ mỗi giây để cập nhật đồng hồ và ghi khi dừng bình thường. Thời gian server ngừng chạy không trừ vào lượt. Chế độ lưu file không hỗ trợ khôi phục ván.
 
-Khi khởi động, server kiểm tra snapshot rồi phục hồi ván ở trạng thái tạm dừng. Người chơi đăng nhập lại để thấy bàn cũ; tất cả người còn tham gia phải bấm **Xác nhận tiếp tục**. Trong lúc chờ, không được lật thẻ/chat và không bị xử bỏ cuộc sau 30 giây mất kết nối. Có thể chủ động rời phòng. Các pha đang chờ úp cặp sai hoặc chờ lượt mới tiếp tục với thời gian còn lại. Thẻ úp luôn bị che trong thông điệp gửi client.
+Khi khởi động, server kiểm tra snapshot rồi phục hồi ván ở trạng thái tạm dừng. Người chơi đăng nhập lại để thấy bàn cũ; tất cả người còn tham gia phải bấm **Xác nhận tiếp tục**. Thời hạn chờ là **120 giây**, lưu trong snapshot theo thời điểm tuyệt đối, không gia hạn khi restart tiếp. Trong lúc chờ không được lật thẻ/chat. Hết hạn, người chưa online hoặc chưa xác nhận được tính bỏ cuộc cùng lúc; không chọn nhầm người vắng mặt cuối cùng làm người thắng. Còn từ hai người đã xác nhận thì tiếp tục; còn một người thì xử theo luật thắng do bỏ cuộc; không còn ai thì không có người thắng (vẫn dùng luật thưởng thua hiện có). Có thể chủ động rời phòng. Các pha đang chờ úp cặp sai hoặc chờ lượt mới tiếp tục với thời gian còn lại. Thẻ úp luôn bị che trong thông điệp gửi client.
 
 Snapshot thiếu, hỏng hoặc không hợp lệ khiến ván chuyển `INTERRUPTED`, không thưởng. Ván hoàn tất xoá snapshot trong cùng transaction ghi kết quả; mã trận chống cộng thưởng lặp lại. Ván đang tính kết quả được xử lý tiếp sau khi khởi động. Lỗi ghi snapshot khiến ván quay về trạng thái đã lưu gần nhất và tạm dừng. MySQL named lock chặn hai server mới chạy đồng thời trên cùng database; vẫn phải dừng server phiên bản cũ trước khi nâng cấp.
 
@@ -50,7 +55,7 @@ Snapshot thiếu, hỏng hoặc không hợp lệ khiến ván chuyển `INTERRU
 
 1. Kết thúc các trận hiện tại và dừng server cũ.
 2. Chạy `sh compile.sh`, khởi động lại server bằng script của dự án.
-3. Làm mới Schemas trong MySQL Workbench để thấy `products`, `matches`, `match_results`.
+3. Làm mới Schemas để thấy thêm `friendships`, `direct_messages`, `coin_transactions`, `match_snapshots`. Startup tự chạy migration; SQL tương đương cho database đã có `users`/`matches` nằm tại `docker/mysql/migrations/20261027-persistence.sql`. Chạy lại an toàn. Phần nhập tệp được thực hiện bởi server sau khi nhập tài khoản.
 
 Không chạy đồng thời server cũ với server mới trên cùng database: server cũ vẫn viết lại bảng lịch sử cũ. Nâng cấp đã được kiểm tra trên database tạm riêng; dữ liệu đang dùng không bị chỉnh trực tiếp trong quá trình kiểm thử.
 
@@ -90,3 +95,40 @@ Kiểm thử tắt cưỡng bức tiến trình riêng trong phòng ghép nhanh,
 ```sh
 java -Djava.awt.headless=true -cp 'out:lib/mysql-connector-j-26.7.0.jar' memorygame.test.DatabaseFlowsTest memorygame.test.GameCrashRecoveryTest
 ```
+
+## Bổ sung lưu trữ bền vững 27/10/2026
+
+- `friendships`: người gửi/nhận, request UUID, trạng thái PENDING/ACCEPTED/DECLINED/EXPIRED, thời gian. Cặp chuẩn hóa bằng LEAST/GREATEST có UNIQUE, CHECK cấm tự kết bạn, FK về users. Lời mời hết hạn sau 2 phút; phản hồi đúng request đã xử lý là idempotent. File bạn bè cũ không có timestamp nên `created_at=NULL`, không giả thời gian tạo quan hệ.
+- `direct_messages`: FK hai người tham gia, nội dung, sent_at/read_at, index theo hai chiều và ID. Phân trang keyset 50 tin, khóa danh tính bằng phiên đăng nhập; trường sender do client tự gửi không cấp thêm quyền. Client chỉ gửi dấu đã đọc sau khi nhận trang đang hiển thị hoặc nhận tin trong cửa sổ có focus. Không cho người thứ ba đọc lịch sử hoặc đánh dấu tin của người khác.
+- Nguồn chat cũ: bảng `private_messages` dùng khóa `private_messages:<id>`; file server `private-messages.bin` dùng hash nội dung/người/thời gian kèm số lần xuất hiện để giữ cả tin giống hệt nhau. Không tự đưa cache client lên server. Không xóa nguồn cũ.
+- `coin_transactions`: khóa `purchase:<user>:<product>` cho vật phẩm mua một lần và `reward:<match>:<user>` cho thưởng. Chèn sổ, cập nhật số dư/quyền sở hữu/kết quả và xóa snapshot cùng transaction. Số dư cũ giữ nguyên; không tạo dòng mở sổ hay thưởng lại trận cũ. Sau lỗi giao dịch chưa biết kết quả commit, cache thống kê không được công bố cho tới khi đọc lại database thành công.
+- Snapshot chứa trạng thái server; giá trị thẻ úp vẫn trả `-1` trong giao thức. SETTLING được xử lý tiếp ngay khi khởi động. Thẻ đầu, cặp sai đang chờ úp và cặp đúng đang chờ chuyển lượt giữ thời gian còn lại. Giữ các luật điểm, thưởng 50/10 và giới hạn lượt hiện có.
+
+## Kết quả kiểm thử của thay đổi
+
+Chạy trên Java 17 và MySQL Docker hiện có, mỗi ca database dùng schema tạm riêng (không migration trực tiếp database người dùng):
+
+| Ca đã chạy | Kết quả |
+|---|---|
+| `GameDatabaseTest` | Đạt: nâng cấp dữ liệu cũ, mua đồng thời, rollback, thưởng trùng |
+| `PersistenceExtensionsTest` | Đạt: nguồn bạn bè/chat có thật; nhập lặp; SQL migration chạy hai lần; database đã có một phần tài khoản; phân trang, quyền riêng tư, đã đọc; lỗi ghi sổ; snapshot CAS |
+| `GameSchemaInitTest`, `PreviousGameSchemaTest` | Đạt: SQL cài mới và schema cũ giữ số dư/kết quả/vật phẩm |
+| `SocialTest` (MySQL) | Đạt: chấp nhận/từ chối, giả phản hồi, gửi lại yêu cầu, chống tự kết bạn, giữ quan hệ sau restart |
+| `WhisperSyncTest` (MySQL) | Đạt: 103 tin, client mới sau restart, phân trang giao thức và chặn người thứ ba |
+| `GameRecoveryTest` | Đạt: thẻ đầu/cặp sai/cặp đúng/chat, che thẻ, xác nhận và hoàn tất |
+| `GameCrashRecoveryTest` | Đạt: kill cưỡng bức tiến trình, giữ thẻ đã xác nhận, khóa server thứ hai, từ chối snapshot hỏng |
+| `RecoveryWaitTest` | Đạt: chờ thật đủ 120 giây, restart không gia hạn, người vắng bị tính bỏ cuộc, thưởng và xóa snapshot |
+| `SnapshotFailureTest` | Đạt: trigger gây lỗi ghi thẻ và kết quả, rollback RAM, khởi động lại trong SETTLING |
+| `RoomSettingsTest`, `ServerInterruptionTest` (MySQL) | Đạt: mất kết nối/kết nối lại, giữ người đã bỏ cuộc, dừng lặp và chỉ gián đoạn trận thiếu snapshot |
+| `GamePersistenceProtocolTest` | Đạt: chơi trọn ván, chơi lại, bỏ cuộc, mua đồ và lịch sử |
+| `TestSuite` (file, headless) | Chưa đạt toàn bộ: dừng ở `ShopEffectsTest`, `theme_classic changedPixels=0`. Đã tái hiện cùng lỗi trên bản HEAD gốc trong thư mục tạm. Các ca trước đó, gồm reconnect trong `RoomSettingsTest`, đã đạt. |
+
+Lệnh bổ sung (sau `sh compile.sh` và `javac -encoding UTF-8 -cp 'out:lib/*' -d out test/*.java`):
+
+```sh
+java -Djava.awt.headless=true -cp 'out:lib/*' memorygame.test.DatabaseFlowsTest memorygame.server.PersistenceExtensionsTest
+java -Djava.awt.headless=true -cp 'out:lib/*' memorygame.test.DatabaseFlowsTest memorygame.test.SnapshotFailureTest
+java -Djava.awt.headless=true -cp 'out:lib/*' memorygame.test.DatabaseFlowsTest memorygame.test.RecoveryWaitTest
+```
+
+Giới hạn: client mới được mô phỏng bằng socket độc lập trên cùng máy, chưa thử hai máy vật lý. Chưa thử mất điện máy chủ/MySQL hay phân vùng mạng đúng lúc ACK commit bị mất; đã thử kill tiến trình game và lỗi SQL bằng trigger. Chưa kiểm tra thủ công cửa sổ Swing trên desktop. Chế độ file vẫn dành cho kiểm thử, không hỗ trợ phục hồi trận. Không bổ sung chức năng sao lưu database.

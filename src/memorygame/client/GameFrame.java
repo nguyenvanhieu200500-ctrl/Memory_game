@@ -90,6 +90,8 @@ public final class GameFrame extends JFrame {
     private ConversationsPanel conversationsPanel;
     private ChatNotificationButton conversationsButton;
     private final UnreadMessages unreadMessages = new UnreadMessages();
+    private final Map<String, Long> whisperCursors = new HashMap<>();
+    private final Map<String, JButton> whisperOlder = new HashMap<>();
     private final Map<String, ChatPanel> whispers = new HashMap<>();
     private final Map<String, JDialog> whisperWindows = new HashMap<>();
     private JButton createRoomButton;
@@ -1042,6 +1044,18 @@ public final class GameFrame extends JFrame {
                 if (message.get("friends") != null) { friends.clear(); friends.addAll(message.<List<String>>value("friends")); roomInvites.updateFriends(friends); lobbyList.repaint(); }
                 if (!message.string("notice").isBlank()) setBanner(lobbyNotice, message.string("notice"), INFO_BG, ACCENT);
             }
+            case WHISPER_PAGE -> {
+                String peer=message.string("username"), k=peer.toLowerCase(Locale.ROOT);
+                ChatPanel panel=whispers.get(k);
+                if(panel!=null) {
+                    panel.setMessages(message.value("messages"));
+                    whisperCursors.put(k,message.longValue("before"));
+                    whisperOlder.get(k).setEnabled(message.bool("hasMore"));
+                    JDialog window=whisperWindows.get(k);
+                    if(window!=null && window.isFocused()) send(Message.of(Protocol.Type.WHISPER_READ)
+                        .with("username",peer).with("through",message.longValue("newest")));
+                }
+            }
             case WHISPER_HISTORY -> {
                 Map<String, List<memorygame.common.Protocol.ChatEntry>> history = message.value("conversations");
                 if (history != null) {
@@ -1061,6 +1075,7 @@ public final class GameFrame extends JFrame {
                     ChatPanel panel = whispers.get(key);
                     if (panel != null) panel.setMessages(whisperHistory.messages(peer));
                     JDialog window = whisperWindows.get(key);
+                    if(window!=null && window.isFocused()) send(Message.of(Protocol.Type.WHISPER_READ).with("username",peer).with("through",message.longValue("id")));
                     unreadMessages.receive(peer, !message.string("from").equalsIgnoreCase(username),
                             window != null && window.isVisible() && window.isFocused());
                     refreshConversations();
@@ -1525,6 +1540,7 @@ public final class GameFrame extends JFrame {
     }
 
     private void resetWhispers() {
+        whisperCursors.clear(); whisperOlder.clear();
         whisperWindows.values().forEach(Window::dispose); whisperWindows.clear(); whispers.clear();
         if (conversationsWindow != null) conversationsWindow.dispose();
         conversationsWindow = null; conversationsPanel = null;
@@ -1579,16 +1595,24 @@ public final class GameFrame extends JFrame {
             panel.setMessages(whisperHistory.messages(peer));
             panel.setBorder(new EmptyBorder(14, 14, 14, 14));
             JDialog dialog = new JDialog(this, "Thì thầm · " + peer, false);
-            dialog.setContentPane(panel); dialog.setSize(460, 360); dialog.setMinimumSize(new Dimension(340, 250));
+            JPanel content=new JPanel(new BorderLayout());content.add(panel,BorderLayout.CENTER);
+            JPanel navigation=new JPanel(new FlowLayout(FlowLayout.LEFT));
+            JButton older=new JButton("Tin cũ hơn"), latest=new JButton("Mới nhất");
+            older.setEnabled(false);whisperOlder.put(key,older);
+            older.addActionListener(e -> send(Message.of(Protocol.Type.WHISPER_PAGE_REQUEST).with("username",peer).with("before",whisperCursors.getOrDefault(key,0L))));
+            latest.addActionListener(e -> send(Message.of(Protocol.Type.WHISPER_PAGE_REQUEST).with("username",peer)));
+            navigation.add(older);navigation.add(latest);content.add(navigation,BorderLayout.NORTH);
+            dialog.setContentPane(content); dialog.setSize(460, 360); dialog.setMinimumSize(new Dimension(340, 250));
             dialog.setLocationRelativeTo(this); dialog.setDefaultCloseOperation(WindowConstants.HIDE_ON_CLOSE);
             dialog.addWindowFocusListener(new WindowAdapter() {
-                @Override public void windowGainedFocus(WindowEvent e) { unreadMessages.read(peer); refreshConversations(); }
+                @Override public void windowGainedFocus(WindowEvent e) { unreadMessages.read(peer); refreshConversations(); send(Message.of(Protocol.Type.WHISPER_PAGE_REQUEST).with("username",peer)); }
             });
             whispers.put(key, panel); whisperWindows.put(key, dialog);
         }
         JDialog dialog = whisperWindows.get(key);
         if (!dialog.isVisible()) dialog.setVisible(true);
         dialog.toFront();
+        send(Message.of(Protocol.Type.WHISPER_PAGE_REQUEST).with("username",peer));
         unreadMessages.read(peer); refreshConversations();
         return panel;
     }
@@ -1705,7 +1729,7 @@ public final class GameFrame extends JFrame {
         chatPanel.setSendingEnabled(!gamePaused);
         if (gamePaused) {
             deadline = 0;
-            gameTurn.setText("Ván đang tạm dừng");
+            gameTurn.setText("Chờ kết nối lại và xác nhận trong 120 giây; quá hạn tính bỏ cuộc");
             gameTimer.setText("Xác nhận " + (confirmed == null ? 0 : confirmed.size()) + "/" + (required == null ? 0 : required.size()));
             turnProgress.setValue(0);
         }

@@ -156,9 +156,17 @@ final class DatabaseStore {
                 try (PreparedStatement p = c.prepareStatement("INSERT INTO user_items(username,product_id) VALUES (?,?)")) {
                     p.setString(1, username); p.setString(2, productId); p.executeUpdate();
                 }
+                recordCoins(c,"purchase:"+key(username)+":"+productId,username,-price,"PURCHASE",null);
                 c.commit(); return "";
             } catch (SQLException e) { c.rollback(); throw e; }
         } catch (SQLException e) { throw new IllegalStateException("Không thể lưu giao dịch mua vật phẩm", e); }
+    }
+
+    private void recordCoins(Connection c,String operation,String username,int amount,String reason,String match) throws SQLException {
+        try(PreparedStatement p=c.prepareStatement("INSERT INTO coin_transactions(operation_id,username,amount,reason,match_id,created_at) VALUES (?,?,?,?,?,?)")) {
+            p.setString(1,operation);p.setString(2,username);p.setInt(3,amount);p.setString(4,reason);
+            p.setString(5,match);p.setLong(6,System.currentTimeMillis());p.executeUpdate();
+        }
     }
 
     void beginMatch(String id, String room, int board, String theme, long started, List<String> players) {
@@ -217,6 +225,7 @@ final class DatabaseStore {
                         p.setLong(10,ended); p.setString(11,id); p.setString(12,name);
                         if(p.executeUpdate()!=1) throw new SQLException("Participant missing or already settled");
                     }
+                    recordCoins(c,"reward:"+id+":"+key(name),name,coins,"MATCH_REWARD",id);
                     try (PreparedStatement p=c.prepareStatement("""
                             UPDATE users SET rating=GREATEST(0,rating+?), coins=coins+?, games=games+1,
                             wins=wins+?, losses=losses+? WHERE username=?
@@ -328,7 +337,7 @@ final class DatabaseStore {
     }
 
     record StoredSnapshot(String id, String room, int board, String theme, long started,
-                          int playerCount, Set<String> players, int version, byte[] payload, String checksum) {}
+                          int playerCount, Set<String> players, int version, long revision, byte[] payload, String checksum) {}
 
     void acquireServerLease() {
         try {
@@ -361,7 +370,7 @@ final class DatabaseStore {
     private void deleteSnapshot(Connection c,String id) throws SQLException {
         try(PreparedStatement p=c.prepareStatement("DELETE FROM match_snapshots WHERE match_id=?")){p.setString(1,id);p.executeUpdate();}
     }
-    void saveSnapshot(String id,byte[] payload) {
+    long saveSnapshot(String id,byte[] payload,long expectedRevision) {
         try(Connection c=open()) {
             c.setAutoCommit(false);
             try {
@@ -370,14 +379,18 @@ final class DatabaseStore {
                         if(!r.next() || !"PLAYING".equals(r.getString(1)))throw new SQLException("Trận không còn đang chơi");
                     }
                 }
-                writeSnapshot(c,id,payload);c.commit();
+                try(PreparedStatement p=c.prepareStatement("UPDATE match_snapshots SET revision=revision+1,payload=?,checksum=?,saved_at=? WHERE match_id=? AND revision=?")) {
+                    p.setBytes(1,payload);p.setString(2,checksum(payload));p.setLong(3,System.currentTimeMillis());p.setString(4,id);p.setLong(5,expectedRevision);
+                    if(p.executeUpdate()!=1)throw new SQLException("Snapshot revision conflict");
+                }
+                c.commit();return expectedRevision+1;
             }catch(SQLException e){c.rollback();throw e;}
         }catch(SQLException e){throw new IllegalStateException("Không lưu được snapshot",e);}
     }
     List<StoredSnapshot> playingSnapshots() {
         List<StoredSnapshot> result=new ArrayList<>();
         try(Connection c=open();Statement s=c.createStatement();ResultSet r=s.executeQuery("""
-            SELECT m.*,s.format_version,s.payload,s.checksum FROM matches m LEFT JOIN match_snapshots s ON m.match_id=s.match_id
+            SELECT m.*,s.format_version,s.revision,s.payload,s.checksum FROM matches m LEFT JOIN match_snapshots s ON m.match_id=s.match_id
             WHERE m.status='PLAYING' ORDER BY m.started_at,m.match_id
             """)) {
             while(r.next()) {
@@ -386,7 +399,7 @@ final class DatabaseStore {
                     p.setString(1,r.getString("match_id"));try(ResultSet names=p.executeQuery()){while(names.next())players.add(names.getString(1));}
                 }
                 result.add(new StoredSnapshot(r.getString("match_id"),r.getString("room_code"),r.getInt("board_size"),r.getString("card_theme"),
-                        r.getLong("started_at"),r.getInt("player_count"),players,r.getInt("format_version"),r.getBytes("payload"),r.getString("checksum")));
+                        r.getLong("started_at"),r.getInt("player_count"),players,r.getInt("format_version"),r.getLong("revision"),r.getBytes("payload"),r.getString("checksum")));
             }
         }catch(SQLException e){throw new IllegalStateException("Không đọc được snapshot",e);}
         return result;
@@ -394,7 +407,7 @@ final class DatabaseStore {
 
     void recoverInterruptedMatches() {
         List<String> ids=new ArrayList<>();
-        try(Connection c=open();Statement s=c.createStatement();ResultSet r=s.executeQuery("SELECT match_id FROM matches WHERE status='PLAYING'")) {
+        try(Connection c=open();Statement s=c.createStatement();ResultSet r=s.executeQuery("SELECT m.match_id FROM matches m LEFT JOIN match_snapshots s ON s.match_id=m.match_id WHERE m.status='PLAYING' AND s.match_id IS NULL")) {
             while(r.next()) ids.add(r.getString(1));
         } catch(SQLException e){throw new IllegalStateException("Không đọc được trận chưa kết thúc",e);}
         for(String id:ids) interruptMatch(id,System.currentTimeMillis(),"Server dừng trước khi lưu kết quả; phát hiện khi khởi động lại",Map.of(),Set.of());
